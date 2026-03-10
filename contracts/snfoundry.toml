@@ -1,0 +1,3 @@
+[sncast.default]
+account = "deployer"
+url = "https://api.zan.top/public/starknet-sepolia/rpc/v0_8"

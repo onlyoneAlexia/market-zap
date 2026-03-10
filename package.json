@@ -1,0 +1,43 @@
+{
+  "name": "market-zap",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --filter=@market-zap/shared --filter=@market-zap/engine --filter=@market-zap/web",
+    "dev:all": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean",
+    "dev:web": "turbo run dev --filter=@market-zap/web",
+    "dev:engine": "turbo run dev --filter=@market-zap/engine",
+    "build:web": "turbo run build --filter=@market-zap/web",
+    "build:engine": "turbo run build --filter=@market-zap/engine",
+    "build:shared": "turbo run build --filter=@market-zap/shared",
+    "script:tx:inspect": "node scripts/tx/inspect-transaction.mjs",
+    "script:deploy": "node scripts/deploy.mjs",
+    "script:deploy:exchange": "node scripts/deploy.mjs --only Exchange",
+    "script:deploy:usdc": "node scripts/deploy.mjs --only USDC",
+    "script:deploy:verify": "node scripts/deploy.mjs --verify",
+    "script:markets:seed": "node scripts/seed/seed-engine-markets.mjs",
+    "script:markets:reseed": "node scripts/seed/reseed-engine-markets.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2",
+    "turbo": "^2.5.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.8.0",
+  "dependencies": {
+    "starknet": "^9.4.2"
+  }
+}

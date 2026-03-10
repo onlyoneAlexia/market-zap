@@ -1,0 +1,79 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+.next/
+.next-dev/
+.next.bak*/
+out/
+build/
+*.tsbuildinfo
+/tmp
+
+# Turbo
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+*.swp
+*.swo
+*~
+
+# AI tooling
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+
+# Cairo / Scarb
+contracts/target/
+target/
+.snfoundry_cache/
+
+# Next.js auto-generated
+next-env.d.ts
+
+# Debug screenshots
+services/engine/tmp/
+
+# Expo
+apps/mobile/.expo/
+apps/mobile/dist/
+
+# Redis
+dump.rdb
+
+# Encrypted keystores (contain private key material)
+*.keystore.json
+
+# Internal working docs (not for repo)
+APP-CAPABILITIES.md
+GAP-ANALYSIS.md
+GASLESS-PAYMASTER-PLAN.md
+MARKET_ZAP_*.md
+docs/plans/
+docs/design-variants/
+diagrams/*
+!diagrams/01-system-architecture.excalidraw

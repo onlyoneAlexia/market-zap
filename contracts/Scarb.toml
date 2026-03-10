@@ -1,0 +1,24 @@
+[package]
+name = "market_zap"
+version = "0.1.0"
+edition = "2024_07"
+cairo-version = "2.15.0"
+
+[dependencies]
+starknet = "2.15.0"
+openzeppelin_token = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+openzeppelin_access = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+openzeppelin_upgrades = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+openzeppelin_security = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+openzeppelin_introspection = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+openzeppelin_interfaces = { git = "https://github.com/OpenZeppelin/cairo-contracts.git", branch = "main" }
+
+[dev-dependencies]
+snforge_std = "0.56.0"
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
