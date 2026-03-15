@@ -391,6 +391,9 @@ export class Database {
     if (status) {
       query += ` AND status = $${idx++}`;
       params.push(status);
+    } else {
+      // Exclude pending-approval markets from default listing
+      query += ` AND status != 'PENDING_APPROVAL'`;
     }
     if (options?.marketType) {
       query += ` AND market_type = $${idx++}`;
@@ -474,12 +477,14 @@ export class Database {
     resolutionTime?: Date;
     marketType?: 'public' | 'private';
     thumbnailUrl?: string;
+    initialStatus?: string;
   }): Promise<MarketRow> {
+    const status = market.initialStatus ?? 'ACTIVE';
     const result = await this.pool.query<MarketRow>(
       `INSERT INTO markets
          (market_id, on_chain_market_id, condition_id, title, description, category, outcome_count,
-          outcome_labels, collateral_token, resolution_source, resolution_time, market_type, thumbnail_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          outcome_labels, collateral_token, resolution_source, resolution_time, market_type, thumbnail_url, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (market_id) DO UPDATE SET
          on_chain_market_id = COALESCE(EXCLUDED.on_chain_market_id, markets.on_chain_market_id),
          condition_id = COALESCE(EXCLUDED.condition_id, markets.condition_id),
@@ -502,6 +507,7 @@ export class Database {
         market.resolutionTime ?? null,
         market.marketType ?? 'public',
         market.thumbnailUrl ?? null,
+        status,
       ],
     );
     return result.rows[0];

@@ -317,6 +317,7 @@ export async function POST(req: NextRequest) {
       conditionId: verifiedConditionId,
       collateralToken: verifiedCollateralToken,
       outcomeCount: verifiedOutcomeCount,
+      initialStatus: clientBody.marketType === "private" ? "ACTIVE" : "PENDING_APPROVAL",
       ...(verifiedResolutionTime > 0
         ? { resolutionTime: new Date(verifiedResolutionTime * 1000).toISOString() }
         : {}),

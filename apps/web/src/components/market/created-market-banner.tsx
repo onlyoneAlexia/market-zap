@@ -53,7 +53,7 @@ export function CreatedMarketBanner({
           <p className="text-muted-foreground">
             {isPrivate
               ? "This dark market is hidden from browse and search. Share the direct link with testers."
-              : "This market is now visible in browse and search. Share the direct link or return to Markets."}
+              : "Your market is pending admin approval. Once approved, it will appear in the marketplace."}
           </p>
           <div className="flex items-center gap-1.5 text-[10px] text-primary">
             <LinkSimple className="h-3.5 w-3.5" weight="duotone" />

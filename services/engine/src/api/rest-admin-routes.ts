@@ -237,18 +237,22 @@ export function registerAdminRoutes(
         marketId: z.string().min(1),
         onChainMarketId: z.string().optional(),
         conditionId: z.string().optional(),
-        title: z.string().min(1),
-        description: z.string().default(""),
-        category: z.string().default("general"),
+        title: z.string().min(1).max(500),
+        description: z.string().max(5000).default(""),
+        category: z.string().max(100).default("general"),
         outcomeCount: z.number().int().min(2).max(8),
-        outcomeLabels: z.array(z.string()).min(2).max(8),
+        outcomeLabels: z.array(z.string().max(100)).min(2).max(8),
         collateralToken: z.string().min(1),
-        resolutionSource: z.string().default(""),
+        resolutionSource: z.string().max(500).default(""),
         resolutionTime: z.string().optional(),
         ammB: z.number().min(10).max(10000).optional(),
         marketType: z.enum(["public", "private"]).optional().default("public"),
         thumbnailUrl: z.string().url().optional(),
-      });
+        initialStatus: z.enum(["PENDING_APPROVAL", "ACTIVE"]).optional().default("ACTIVE"),
+      }).refine(
+        (d) => d.outcomeLabels.length === d.outcomeCount,
+        { message: "outcomeLabels length must match outcomeCount" },
+      );
 
       const parsed = SeedMarketSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -271,6 +275,7 @@ export function registerAdminRoutes(
         resolutionTime: data.resolutionTime ? new Date(data.resolutionTime) : undefined,
         marketType: data.marketType,
         thumbnailUrl: data.thumbnailUrl,
+        initialStatus: data.initialStatus,
       });
 
       const marketId = market.market_id;
@@ -329,6 +334,76 @@ export function registerAdminRoutes(
       }
 
       ok(res, { market, ammReady: true }, 201);
+    }),
+  );
+
+  // Approve a pending market — transitions PENDING_APPROVAL → ACTIVE
+  router.post(
+    "/api/admin/approve-market",
+    requireAuth,
+    asyncHandler(async (req: Request, res: Response) => {
+      const ApproveSchema = z.object({
+        marketId: z.string().min(1),
+      });
+
+      const parsed = ApproveSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+      }
+
+      const market = await context.deps.db.getMarketById(parsed.data.marketId);
+      if (!market) {
+        res.status(404).json({ error: "Market not found" });
+        return;
+      }
+      if (market.status !== "PENDING_APPROVAL") {
+        res.status(400).json({ error: `Market is already ${market.status}` });
+        return;
+      }
+
+      await context.deps.db.updateMarketStatus(market.market_id, "ACTIVE");
+      ok(res, { market: formatMarket({ ...market, status: "ACTIVE" }) });
+    }),
+  );
+
+  // Reject a pending market — transitions PENDING_APPROVAL → VOIDED
+  router.post(
+    "/api/admin/reject-market",
+    requireAuth,
+    asyncHandler(async (req: Request, res: Response) => {
+      const RejectSchema = z.object({
+        marketId: z.string().min(1),
+      });
+
+      const parsed = RejectSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+      }
+
+      const market = await context.deps.db.getMarketById(parsed.data.marketId);
+      if (!market) {
+        res.status(404).json({ error: "Market not found" });
+        return;
+      }
+      if (market.status !== "PENDING_APPROVAL") {
+        res.status(400).json({ error: `Market is already ${market.status}` });
+        return;
+      }
+
+      await context.deps.db.updateMarketStatus(market.market_id, "VOIDED");
+      ok(res, { market: formatMarket({ ...market, status: "VOIDED" }) });
+    }),
+  );
+
+  // List pending markets awaiting approval
+  router.get(
+    "/api/admin/pending-markets",
+    requireAuth,
+    asyncHandler(async (_req: Request, res: Response) => {
+      const markets = await context.deps.db.getMarkets(100, 0, undefined, "PENDING_APPROVAL");
+      ok(res, markets.map(formatMarket));
     }),
   );
 

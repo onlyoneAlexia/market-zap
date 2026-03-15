@@ -293,9 +293,7 @@ export default function CreateMarketPage() {
       toast({
         title: marketType === "private" ? "Private market created" : "Market created",
         description: MANUAL_MARKET_SEEDING_ENABLED
-          ? marketType === "private"
-            ? "You will land on the market page with a shareable tester link."
-            : "Your market is now visible in the Sepolia beta marketplace."
+          ? "Your market has been submitted and is awaiting admin approval before it appears in the marketplace."
           : "On-chain create succeeded. The market page will refresh automatically once the indexer catches up.",
         variant: "success",
       });

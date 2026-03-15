@@ -33,6 +33,7 @@ export type MarketType = (typeof MarketType)[keyof typeof MarketType];
 export const MarketTypeSchema = z.enum(["public", "private"]);
 
 export const MarketStatus = {
+  PendingApproval: "pending_approval",
   Active: "active",
   Paused: "paused",
   Proposed: "proposed",
@@ -43,6 +44,7 @@ export const MarketStatus = {
 export type MarketStatus = (typeof MarketStatus)[keyof typeof MarketStatus];
 
 export const MarketStatusSchema = z.enum([
+  "pending_approval",
   "active",
   "paused",
   "proposed",

@@ -41,12 +41,12 @@ export async function createTables(pool: Pool): Promise<void> {
       ALTER TABLE markets ADD COLUMN IF NOT EXISTS thumbnail_url TEXT DEFAULT NULL;
     `);
 
-    // Migrate status CHECK to include 'PROPOSED' for 2-phase resolution
+    // Migrate status CHECK to include 'PENDING_APPROVAL' for market moderation
     await client.query(`
       DO $$ BEGIN
         ALTER TABLE markets DROP CONSTRAINT IF EXISTS markets_status_check;
         ALTER TABLE markets ADD CONSTRAINT markets_status_check
-          CHECK (status IN ('ACTIVE', 'PAUSED', 'PROPOSED', 'RESOLVED', 'VOIDED'));
+          CHECK (status IN ('PENDING_APPROVAL', 'ACTIVE', 'PAUSED', 'PROPOSED', 'RESOLVED', 'VOIDED'));
       EXCEPTION WHEN undefined_table THEN NULL;
       END $$;
     `);

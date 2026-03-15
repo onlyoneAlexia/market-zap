@@ -11,7 +11,7 @@ export interface MarketRow {
   collateral_token: string;
   resolution_source: string;
   resolution_time: Date | null;
-  status: "ACTIVE" | "PAUSED" | "PROPOSED" | "RESOLVED" | "VOIDED";
+  status: "PENDING_APPROVAL" | "ACTIVE" | "PAUSED" | "PROPOSED" | "RESOLVED" | "VOIDED";
   winning_outcome: number | null;
   total_volume: string;
   liquidity: string;

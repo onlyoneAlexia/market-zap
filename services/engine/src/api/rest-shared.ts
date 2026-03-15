@@ -137,7 +137,11 @@ export const PaginationSchema = z.object({
 
 export const MarketListSchema = PaginationSchema.extend({
   category: z.string().optional(),
-  status: z.string().optional(),
+  status: z.string().optional().transform((s) => {
+    // Never allow public callers to filter by PENDING_APPROVAL
+    if (s && s.toUpperCase() === "PENDING_APPROVAL") return undefined;
+    return s;
+  }),
   marketType: z.enum(["public", "private"]).optional(),
   sortBy: z.enum(["volume", "createdAt", "resolutionTime"]).optional(),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
