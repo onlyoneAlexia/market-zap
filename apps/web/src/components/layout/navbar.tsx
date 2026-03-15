@@ -4,7 +4,7 @@ import React from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartBar, PlusSquare, Trophy, WifiHigh, WifiSlash, User, ShieldCheck } from "@phosphor-icons/react";
+import { ChartBar, PlusSquare, Trophy, User, ShieldCheck } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -36,7 +36,7 @@ const baseNavItems = [
 
 export function Navbar() {
   const pathname = usePathname();
-  const isConnected = useAppStore((s) => s.wsConnected);
+
   const walletAddress = useAppStore((s) => s.wallet.address);
   const isAdmin = useIsOperator(walletAddress ?? undefined);
 
@@ -73,16 +73,6 @@ export function Navbar() {
         </Link>
 
         <div className="flex items-center gap-1.5">
-          <div
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-1 text-[10px] font-mono",
-              isConnected ? "bg-yes/10 text-yes" : "bg-muted text-muted-foreground",
-            )}
-            role="status"
-            aria-label={isConnected ? "Connected" : "Disconnected"}
-          >
-            {isConnected ? <WifiHigh className="h-3 w-3" weight="bold" /> : <WifiSlash className="h-3 w-3" weight="bold" />}
-          </div>
           <PwaInstallButton />
           <ThemeToggle />
           <WalletButton />
