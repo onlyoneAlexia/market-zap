@@ -36,6 +36,10 @@ RUN apk add --no-cache curl bash && \
     /root/.starkli/bin/starkliup && \
     ln -s /root/.starkli/bin/starkli /usr/local/bin/starkli
 
+# tsx handles extensionless ESM imports and .ts source loading
+# (the project uses moduleResolution:"bundler" which omits .js extensions)
+RUN npm install -g tsx
+
 ENV NODE_ENV=production
 
 # Copy root manifests
@@ -46,19 +50,16 @@ COPY services/engine/package.json services/engine/
 # Install production deps only
 RUN npm ci --workspace=packages/shared --workspace=services/engine --omit=dev
 
-# Copy built artifacts
+# Copy shared: dist (compiled) + src (for package.json exports that point to .ts)
 COPY --from=build /app/packages/shared/dist/ packages/shared/dist/
-COPY --from=build /app/packages/shared/src/abis/ packages/shared/src/abis/
-COPY --from=build /app/packages/shared/src/addresses/ packages/shared/src/addresses/
-COPY --from=build /app/services/engine/dist/ services/engine/dist/
+COPY --from=build /app/packages/shared/src/ packages/shared/src/
 
-# Patch shared package.json exports to use compiled JS (not TS source)
-# The original points to ./src/*.ts for bundlers, but Node.js needs ./dist/*.js
-RUN sed -i 's|./src/index.ts|./dist/index.js|g; s|./src/types/index.ts|./dist/types/index.js|g' packages/shared/package.json
+# Copy engine compiled output
+COPY --from=build /app/services/engine/dist/ services/engine/dist/
 
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://localhost:3001/api/health || exit 1
 
-CMD ["node", "services/engine/dist/index.js"]
+CMD ["node", "--import", "tsx/esm", "services/engine/dist/index.js"]
