@@ -30,9 +30,11 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install starkli for keystore decryption (optional, only if using keystores)
-# RUN apk add --no-cache curl && \
-#     curl -L https://raw.githubusercontent.com/software-mansion/starkli/main/scripts/install.sh | sh
+# Install starkli for keystore decryption
+RUN apk add --no-cache curl bash && \
+    curl https://get.starkli.sh | bash && \
+    /root/.starkli/bin/starkliup && \
+    ln -s /root/.starkli/bin/starkli /usr/local/bin/starkli
 
 ENV NODE_ENV=production
 

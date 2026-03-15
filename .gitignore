@@ -74,6 +74,7 @@ dump.rdb
 
 # Encrypted keystores (contain private key material)
 *.keystore.json
+deploy/admin.keystore.json
 
 # Internal working docs (not for repo)
 APP-CAPABILITIES.md

@@ -48,7 +48,7 @@ export function PwaProvider({ children }: { children: ReactNode }) {
 
     setIsInstalled(isStandaloneDisplayMode());
 
-    if ("serviceWorker" in navigator) {
+    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
       void navigator.serviceWorker.register("/sw.js").catch((error) => {
         console.warn("[pwa] service worker registration failed", error);
       });
