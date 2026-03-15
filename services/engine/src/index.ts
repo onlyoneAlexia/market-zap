@@ -16,7 +16,11 @@ import { Settler } from "./settler.js";
 import { createRestRouter, errorHandler } from "./api/rest.js";
 import { WebSocketManager } from "./api/websocket.js";
 import { ApibaraIndexer } from "./indexer/apibara.js";
-import { computeTokenId, scalePrice, getContractAddress } from "@market-zap/shared";
+import {
+  computeTokenId,
+  scalePrice,
+  getContractAddress,
+} from "@market-zap/shared";
 import type { SupportedNetwork } from "@market-zap/shared";
 import { logger } from "./logger.js";
 import { loadAdminPrivateKey } from "./keystore.js";
@@ -24,11 +28,16 @@ import { loadAdminPrivateKey } from "./keystore.js";
 const PORT = Number(process.env.PORT) || 3001;
 const NETWORK = (process.env.STARKNET_NETWORK ?? "sepolia") as SupportedNetwork;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const EXCHANGE_ADDRESS = process.env.EXCHANGE_ADDRESS ?? getContractAddress("CLOBRouter", NETWORK);
+const EXCHANGE_ADDRESS =
+  process.env.EXCHANGE_ADDRESS ?? getContractAddress("CLOBRouter", NETWORK);
 const ADMIN_PRIVATE_KEY = loadAdminPrivateKey();
 const ADMIN_ADDRESS = requireEnv("ADMIN_ADDRESS");
-const CONDITIONAL_TOKENS_ADDRESS = process.env.CONDITIONAL_TOKENS_ADDRESS ?? getContractAddress("ConditionalTokens", NETWORK);
-const MARKET_FACTORY_ADDRESS = process.env.MARKET_FACTORY_ADDRESS ?? getContractAddress("MarketFactory", NETWORK);
+const CONDITIONAL_TOKENS_ADDRESS =
+  process.env.CONDITIONAL_TOKENS_ADDRESS ??
+  getContractAddress("ConditionalTokens", NETWORK);
+const MARKET_FACTORY_ADDRESS =
+  process.env.MARKET_FACTORY_ADDRESS ??
+  getContractAddress("MarketFactory", NETWORK);
 const RESOLVER_ADDRESS =
   process.env.RESOLVER_ADDRESS ?? getContractAddress("Resolver", NETWORK);
 
@@ -36,7 +45,9 @@ async function main(): Promise<void> {
   logger.info("starting Market-Zap CLOB engine...");
 
   if (IS_PRODUCTION && !process.env.ENGINE_API_KEY?.trim()) {
-    logger.fatal("missing required environment variable in production: ENGINE_API_KEY");
+    logger.fatal(
+      "missing required environment variable in production: ENGINE_API_KEY",
+    );
     process.exit(1);
   }
 
@@ -54,7 +65,7 @@ async function main(): Promise<void> {
 
   const orderBook = new OrderBook(redis);
   const ammState = new AmmStateManager(redis);
-  const DEPLOY_BLOCK = 7_496_594; // block the contracts were deployed on Sepolia
+  const DEPLOY_BLOCK = Number(process.env.INDEXER_START_BLOCK);
   const indexer = new ApibaraIndexer(db, redis, {
     exchangeAddress: EXCHANGE_ADDRESS,
     conditionalTokensAddress: CONDITIONAL_TOKENS_ADDRESS,
@@ -111,22 +122,25 @@ async function main(): Promise<void> {
 
   const wsManager = new WebSocketManager();
 
-  const router = createRestRouter({
-    orderBook,
-    matcher,
-    balanceChecker,
-    settler,
-    db,
-    ws: wsManager,
-    ammState,
-    redis,
-  }, {
-    health: {
-      checkDatabase: () => db.healthCheck(),
-      checkRedis: async () => (await redis.ping()) === "PONG",
-      getIndexerState: () => indexer.getState(),
+  const router = createRestRouter(
+    {
+      orderBook,
+      matcher,
+      balanceChecker,
+      settler,
+      db,
+      ws: wsManager,
+      ammState,
+      redis,
     },
-  });
+    {
+      health: {
+        checkDatabase: () => db.healthCheck(),
+        checkRedis: async () => (await redis.ping()) === "PONG",
+        getIndexerState: () => indexer.getState(),
+      },
+    },
+  );
   app.use(router);
   app.use(errorHandler);
 
@@ -240,7 +254,10 @@ async function rebuildOrderbook(
     restored++;
   }
 
-  logger.info({ restored, total: openOrders.length }, `orderbook rebuilt: ${restored} orders restored`);
+  logger.info(
+    { restored, total: openOrders.length },
+    `orderbook rebuilt: ${restored} orders restored`,
+  );
 }
 
 /**
@@ -283,7 +300,10 @@ async function sweepExpiredOrders(
 /**
  * Cancel an order if it's still in a non-terminal state.
  */
-async function cancelOrderIfUnsettled(db: Database, nonce: string): Promise<void> {
+async function cancelOrderIfUnsettled(
+  db: Database,
+  nonce: string,
+): Promise<void> {
   try {
     await db.updateOrderStatus(nonce, "CANCELLED", "0");
   } catch {}
@@ -372,9 +392,15 @@ async function retryPendingSettlements(
           buyer: row.buyer,
           seller: row.seller,
         });
-        logger.info({ tradeId: row.id, txHash: result.txHash }, "retry settled trade");
+        logger.info(
+          { tradeId: row.id, txHash: result.txHash },
+          "retry settled trade",
+        );
       } else {
-        await db.markTradeFailed(row.id, result.error ?? "Settlement failed on retry");
+        await db.markTradeFailed(
+          row.id,
+          result.error ?? "Settlement failed on retry",
+        );
         await cancelOrderIfUnsettled(db, row.buyer_nonce);
         await cancelOrderIfUnsettled(db, row.seller_nonce);
         ws.broadcast(`trades:${row.market_id}`, {
@@ -384,7 +410,10 @@ async function retryPendingSettlements(
           buyer: row.buyer,
           seller: row.seller,
         });
-        logger.warn({ tradeId: row.id, error: result.error }, "retry failed for trade");
+        logger.warn(
+          { tradeId: row.id, error: result.error },
+          "retry failed for trade",
+        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

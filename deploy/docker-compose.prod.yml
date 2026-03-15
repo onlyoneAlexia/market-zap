@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ── Postgres ──────────────────────────────────────────────────────
   postgres:
@@ -56,6 +54,7 @@ services:
       ADMIN_KEYSTORE_PASSWORD: ${ADMIN_KEYSTORE_PASSWORD:?Set ADMIN_KEYSTORE_PASSWORD in .env}
       ENGINE_API_KEY: ${ENGINE_API_KEY:?Set ENGINE_API_KEY in .env}
       SKIP_BALANCE_CHECK: ${SKIP_BALANCE_CHECK:-false}
+      INDEXER_START_BLOCK: ${INDEXER_START_BLOCK:-}
       TRUST_PROXY: "1"
     volumes:
       - ./admin.keystore.json:/keystore/admin.keystore.json:ro
