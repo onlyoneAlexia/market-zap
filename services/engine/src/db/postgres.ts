@@ -373,6 +373,12 @@ export class Database {
     offset = 0,
     category?: string,
     status?: string,
+    options?: {
+      marketType?: "public" | "private";
+      sortBy?: "volume" | "createdAt" | "resolutionTime";
+      sortOrder?: "asc" | "desc";
+      search?: string;
+    },
   ): Promise<MarketRow[]> {
     let query = `SELECT * FROM markets WHERE condition_id IS NOT NULL AND condition_id != '' AND on_chain_market_id IS NOT NULL`;
     const params: unknown[] = [];
@@ -386,8 +392,23 @@ export class Database {
       query += ` AND status = $${idx++}`;
       params.push(status);
     }
+    if (options?.marketType) {
+      query += ` AND market_type = $${idx++}`;
+      params.push(options.marketType);
+    }
+    if (options?.search) {
+      query += ` AND title ILIKE $${idx++}`;
+      params.push(`%${options.search}%`);
+    }
 
-    query += ` ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
+    const sortColumnMap: Record<string, string> = {
+      volume: "total_volume",
+      createdAt: "created_at",
+      resolutionTime: "resolution_time",
+    };
+    const sortCol = sortColumnMap[options?.sortBy ?? ""] ?? "created_at";
+    const sortDir = options?.sortOrder === "asc" ? "ASC" : "DESC";
+    query += ` ORDER BY ${sortCol} ${sortDir} LIMIT $${idx++} OFFSET $${idx++}`;
     params.push(limit, offset);
 
     const result = await this.pool.query<MarketRow>(query, params);
@@ -452,17 +473,19 @@ export class Database {
     resolutionSource?: string;
     resolutionTime?: Date;
     marketType?: 'public' | 'private';
+    thumbnailUrl?: string;
   }): Promise<MarketRow> {
     const result = await this.pool.query<MarketRow>(
       `INSERT INTO markets
          (market_id, on_chain_market_id, condition_id, title, description, category, outcome_count,
-          outcome_labels, collateral_token, resolution_source, resolution_time, market_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          outcome_labels, collateral_token, resolution_source, resolution_time, market_type, thumbnail_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (market_id) DO UPDATE SET
          on_chain_market_id = COALESCE(EXCLUDED.on_chain_market_id, markets.on_chain_market_id),
          condition_id = COALESCE(EXCLUDED.condition_id, markets.condition_id),
          resolution_time = COALESCE(EXCLUDED.resolution_time, markets.resolution_time),
          market_type = COALESCE(EXCLUDED.market_type, markets.market_type),
+         thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, markets.thumbnail_url),
          updated_at = NOW()
        RETURNING *`,
       [
@@ -478,6 +501,7 @@ export class Database {
         market.resolutionSource ?? "",
         market.resolutionTime ?? null,
         market.marketType ?? 'public',
+        market.thumbnailUrl ?? null,
       ],
     );
     return result.rows[0];
@@ -596,14 +620,24 @@ export class Database {
     marketId?: string,
   ): Promise<OrderRow[]> {
     const params: unknown[] = [userAddress, limit, offset];
-    let query = `SELECT * FROM orders
-      WHERE user_address = $1 AND status IN ('OPEN', 'PARTIALLY_FILLED')
-        AND NOT (order_type = 'MARKET' AND status = 'PARTIALLY_FILLED')`;
+    // Exclude orders where every associated trade has failed settlement.
+    // Such orders are effectively dead — the rollback will mark them
+    // CANCELLED shortly, but this query ensures they never appear in the
+    // meantime (race window between match and async rollback).
+    let query = `SELECT o.* FROM orders o
+      WHERE o.user_address = $1 AND o.status IN ('OPEN', 'PARTIALLY_FILLED')
+        AND NOT (o.order_type = 'MARKET' AND o.status = 'PARTIALLY_FILLED')
+        AND NOT EXISTS (
+          SELECT 1 FROM trades t
+          WHERE (t.buyer_nonce = o.nonce OR t.seller_nonce = o.nonce)
+          HAVING COUNT(*) > 0
+             AND COUNT(*) = COUNT(*) FILTER (WHERE t.settlement_status = 'failed')
+        )`;
     if (marketId) {
       params.push(marketId);
-      query += ` AND market_id = $${params.length}`;
+      query += ` AND o.market_id = $${params.length}`;
     }
-    query += ` ORDER BY created_at DESC LIMIT $2 OFFSET $3`;
+    query += ` ORDER BY o.created_at DESC LIMIT $2 OFFSET $3`;
     const result = await this.pool.query<OrderRow>(query, params);
     return result.rows;
   }
@@ -713,11 +747,11 @@ export class Database {
 
   async getPriceHistory(
     marketId: string,
-    _outcomeIndex: number,
-    interval: "1h" | "6h" | "1d" = "1h",
+    outcomeCount: number,
+    interval: "5m" | "15m" | "1h" | "6h" | "1d" = "1h",
     limit = 168,
-  ): Promise<Array<{ timestamp: Date; price: string; volume: string }>> {
-    return getPriceHistoryQuery(this.pool, marketId, _outcomeIndex, interval, limit);
+  ): Promise<Array<{ timestamp: Date; prices: string[]; volume: string }>> {
+    return getPriceHistoryQuery(this.pool, marketId, outcomeCount, interval, limit);
   }
 
   // -----------------------------------------------------------------------

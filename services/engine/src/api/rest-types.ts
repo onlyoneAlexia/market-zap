@@ -29,11 +29,23 @@ export interface BroadcastQuoteParams {
   isDark?: boolean;
 }
 
+export interface RestHealthState {
+  lastProcessedBlock: number;
+  running: boolean;
+}
+
+export interface RestHealthChecks {
+  checkDatabase?: () => Promise<boolean>;
+  checkRedis?: () => Promise<boolean>;
+  getIndexerState?: () => RestHealthState;
+}
+
 export interface RestRouteContext {
   createMarketLimiter: ReturnType<typeof rateLimit>;
   conditionalTokensAddress: string;
   deps: RestDeps;
   factoryAddress: string;
+  health?: RestHealthChecks;
   network: SupportedNetwork;
   orderLimiter: ReturnType<typeof rateLimit>;
   broadcastQuote(params: BroadcastQuoteParams): Promise<void>;

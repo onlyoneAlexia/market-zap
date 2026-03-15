@@ -131,6 +131,20 @@ const config: Config = {
           from: { opacity: "0", transform: "translateY(8px)" },
           to: { opacity: "1", transform: "translateY(0)" },
         },
+        "stat-reveal": {
+          "0%": {
+            opacity: "0",
+            transform: "translateY(20px) scale(0.95)",
+          },
+          "60%": {
+            opacity: "1",
+            transform: "translateY(-4px) scale(1.02)",
+          },
+          "100%": {
+            opacity: "1",
+            transform: "translateY(0) scale(1)",
+          },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -143,6 +157,8 @@ const config: Config = {
         shimmer: "shimmer 2s infinite linear",
         pulse: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
         appear: "appear 0.5s cubic-bezier(0.16, 1, 0.3, 1) both",
+        "stat-reveal":
+          "stat-reveal 0.7s cubic-bezier(0.16, 1, 0.3, 1) both",
       },
       backgroundImage: {
         "shimmer-gradient":

@@ -97,9 +97,12 @@ export function MyOrders({ marketId, collateralToken }: MyOrdersProps) {
       </CardHeader>
       <CardContent>
         {orders.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            No open orders
-          </p>
+          <div className="py-6 text-center">
+            <p className="text-xs text-muted-foreground">No open orders</p>
+            <p className="mt-1 text-[10px] text-muted-foreground/60">
+              Limit orders you place will appear here until they are filled or cancelled.
+            </p>
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="space-y-3 md:hidden">

@@ -30,12 +30,20 @@ import {
   SubmitOrderSchema,
   verifyOrderSignature,
 } from "./rest-shared.js";
-import type { BroadcastQuoteParams, RestDeps, RestRouteContext } from "./rest-types.js";
+import type {
+  BroadcastQuoteParams,
+  RestDeps,
+  RestHealthChecks,
+  RestRouteContext,
+} from "./rest-types.js";
 
 export type { RestDeps } from "./rest-types.js";
 export { errorHandler } from "./rest-shared.js";
 
-export function createRestRouter(deps: RestDeps): Router {
+export function createRestRouter(
+  deps: RestDeps,
+  options: { health?: RestHealthChecks } = {},
+): Router {
   const router = Router();
   const network = (process.env.STARKNET_NETWORK ?? "sepolia") as SupportedNetwork;
   const conditionalTokensAddress =
@@ -46,8 +54,8 @@ export function createRestRouter(deps: RestDeps): Router {
     getContractAddress("MarketFactory", network);
 
   router.use((req: Request, _res: Response, next: NextFunction) => {
-    req.headers["x-request-id"] =
-      (req.headers["x-request-id"] as string) ?? uuidv4();
+    const requestId = (req.headers["x-request-id"] as string) ?? uuidv4();
+    req.headers["x-request-id"] = requestId;
     next();
   });
 
@@ -66,7 +74,7 @@ export function createRestRouter(deps: RestDeps): Router {
 
   const safeIpKey = (req: Request): string => {
     try {
-      return (req.headers["x-forwarded-for"] as string) ?? req.ip ?? "unknown";
+      return req.ip ?? "unknown";
     } catch {
       return "unknown";
     }
@@ -131,6 +139,14 @@ export function createRestRouter(deps: RestDeps): Router {
     });
   }
 
+  const healthChecks: RestHealthChecks = {
+    checkDatabase: () => deps.db.healthCheck(),
+    checkRedis: deps.redis
+      ? async () => (await deps.redis?.ping()) === "PONG"
+      : undefined,
+    ...options.health,
+  };
+
   router.post(
     "/api/orders",
     orderLimiter,
@@ -165,6 +181,12 @@ export function createRestRouter(deps: RestDeps): Router {
       if (!market.condition_id || !market.on_chain_market_id) {
         res.status(400).json({
           error: "Market is not set up for on-chain trading. Missing condition_id or on_chain_market_id.",
+        });
+        return;
+      }
+      if (data.user.toLowerCase() === deps.settler.adminAddr.toLowerCase()) {
+        res.status(400).json({
+          error: "The operator account cannot place trades. Connect a different wallet.",
         });
         return;
       }
@@ -536,6 +558,7 @@ export function createRestRouter(deps: RestDeps): Router {
     conditionalTokensAddress,
     deps,
     factoryAddress,
+    health: healthChecks,
     network,
     orderLimiter,
     broadcastQuote,

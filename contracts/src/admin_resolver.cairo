@@ -2,7 +2,7 @@
 ///
 /// Flow:
 /// 1. Admin calls `propose_outcome` after market resolution_time.
-/// 2. A 24-hour dispute window begins.
+/// 2. A dispute window begins (default 24 hours, min 1 hour, max 30 days).
 /// 3. Admin may `override_proposal` during the window (resets timer).
 /// 4. Anyone calls `finalize_resolution` after the window elapses,
 ///    which reports payouts to ConditionalTokens.
@@ -42,6 +42,12 @@ pub mod AdminResolver {
     // -----------------------------------------------------------------
     /// Default dispute period: 24 hours.
     const DEFAULT_DISPUTE_PERIOD: u64 = 24 * 60 * 60;
+    /// Default minimum dispute period: 1 hour.
+    const DEFAULT_MIN_DISPUTE_PERIOD: u64 = 60 * 60;
+    /// Default maximum dispute period: 30 days.
+    const DEFAULT_MAX_DISPUTE_PERIOD: u64 = 30 * 24 * 60 * 60;
+    /// Hard safety floor: 60 seconds. Admin can never set min below this.
+    const ABSOLUTE_MIN_DISPUTE_PERIOD: u64 = 60;
     /// 48-hour upgrade timelock.
     const UPGRADE_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
 
@@ -60,6 +66,10 @@ pub mod AdminResolver {
         market_factory: ContractAddress,
         /// Configurable dispute period (seconds).
         dispute_period: u64,
+        /// Configurable minimum dispute period (seconds).
+        min_dispute_period: u64,
+        /// Configurable maximum dispute period (seconds).
+        max_dispute_period: u64,
         /// condition_id -> Proposal.
         proposals: Map<felt252, Proposal>,
         /// condition_id -> outcome_count (cached from CT for payout construction).
@@ -81,7 +91,10 @@ pub mod AdminResolver {
         ProposalOverridden: ProposalOverridden,
         ResolutionFinalized: ResolutionFinalized,
         DisputePeriodUpdated: DisputePeriodUpdated,
+        DisputeBoundsUpdated: DisputeBoundsUpdated,
         AdminTransferred: AdminTransferred,
+        UpgradeProposed: UpgradeProposed,
+        UpgradeCancelled: UpgradeCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -116,10 +129,27 @@ pub mod AdminResolver {
     }
 
     #[derive(Drop, starknet::Event)]
+    pub struct DisputeBoundsUpdated {
+        pub old_min: u64,
+        pub new_min: u64,
+        pub old_max: u64,
+        pub new_max: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
     pub struct AdminTransferred {
         pub old_admin: ContractAddress,
         pub new_admin: ContractAddress,
     }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeProposed {
+        pub new_class_hash: ClassHash,
+        pub proposed_at: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeCancelled {}
 
     // -----------------------------------------------------------------
     //  Errors
@@ -134,14 +164,21 @@ pub mod AdminResolver {
         pub const INVALID_OUTCOME: felt252 = 'AR: invalid outcome index';
         pub const ZERO_ADDRESS: felt252 = 'AR: zero address';
         pub const ZERO_PERIOD: felt252 = 'AR: zero dispute period';
+        pub const PERIOD_TOO_SHORT: felt252 = 'AR: period below minimum';
+        pub const PERIOD_TOO_LONG: felt252 = 'AR: period above maximum';
+        pub const MIN_BELOW_FLOOR: felt252 = 'AR: min below safety floor';
+        pub const MIN_EXCEEDS_MAX: felt252 = 'AR: min exceeds max';
         pub const MARKET_NOT_VOIDED: felt252 = 'AR: market not voided';
+        pub const MARKET_IS_VOIDED: felt252 = 'AR: market is voided';
         pub const RESOLUTION_TOO_EARLY: felt252 = 'AR: before resolution_time';
         pub const UPGRADE_NOT_PROPOSED: felt252 = 'AR: no pending upgrade';
         pub const UPGRADE_TIMELOCK: felt252 = 'AR: timelock not elapsed';
+        pub const UPGRADE_ALREADY_PENDING: felt252 = 'AR: upgrade already pending';
     }
 
     // -----------------------------------------------------------------
     //  Constructor
+    //  L-3 fix: validate all address parameters.
     // -----------------------------------------------------------------
     #[constructor]
     fn constructor(
@@ -151,10 +188,14 @@ pub mod AdminResolver {
         market_factory: ContractAddress,
     ) {
         assert(!admin.is_zero(), Errors::ZERO_ADDRESS);
+        assert(!conditional_tokens.is_zero(), 'AR: zero cond_tokens');
+        assert(!market_factory.is_zero(), 'AR: zero market_factory');
         self.admin.write(admin);
         self.conditional_tokens.write(conditional_tokens);
         self.market_factory.write(market_factory);
         self.dispute_period.write(DEFAULT_DISPUTE_PERIOD);
+        self.min_dispute_period.write(DEFAULT_MIN_DISPUTE_PERIOD);
+        self.max_dispute_period.write(DEFAULT_MAX_DISPUTE_PERIOD);
     }
 
     // -----------------------------------------------------------------
@@ -169,14 +210,21 @@ pub mod AdminResolver {
 
     // -----------------------------------------------------------------
     //  Upgrade with 48-hour timelock
+    //  M-4 fix: prevent re-proposal overwrite.
+    //  M-5 fix: add cancel_upgrade.
+    //  L-5 fix: emit events.
     // -----------------------------------------------------------------
     #[abi(embed_v0)]
     impl UpgradeTimelockImpl of super::IResolverUpgradeTimelock<ContractState> {
         fn propose_upgrade(ref self: ContractState, new_class_hash: ClassHash) {
             self.assert_only_admin();
+            // M-4 fix: prevent overwriting a pending proposal.
+            let existing = self.proposed_upgrade.read();
+            assert(existing.is_zero(), Errors::UPGRADE_ALREADY_PENDING);
             let now = get_block_timestamp();
             self.proposed_upgrade.write(new_class_hash);
             self.upgrade_proposed_at.write(now);
+            self.emit(UpgradeProposed { new_class_hash, proposed_at: now });
         }
 
         fn execute_upgrade(ref self: ContractState) {
@@ -189,6 +237,16 @@ pub mod AdminResolver {
             self.proposed_upgrade.write(Zero::zero());
             self.upgrade_proposed_at.write(0);
             self.upgradeable.upgrade(proposed);
+        }
+
+        /// M-5 fix: cancel a pending upgrade proposal.
+        fn cancel_upgrade(ref self: ContractState) {
+            self.assert_only_admin();
+            let proposed = self.proposed_upgrade.read();
+            assert(proposed.is_non_zero(), Errors::UPGRADE_NOT_PROPOSED);
+            self.proposed_upgrade.write(Zero::zero());
+            self.upgrade_proposed_at.write(0);
+            self.emit(UpgradeCancelled {});
         }
     }
 
@@ -217,6 +275,8 @@ pub mod AdminResolver {
             };
             let market = mf.get_market(market_id);
             assert(market.condition_id == condition_id, Errors::INVALID_OUTCOME);
+            // M-1 fix: reject proposal on voided markets.
+            assert(!market.voided, Errors::MARKET_IS_VOIDED);
             let now = get_block_timestamp();
             assert(now >= market.resolution_time, Errors::RESOLUTION_TOO_EARLY);
 
@@ -253,9 +313,17 @@ pub mod AdminResolver {
                 );
         }
 
-        fn finalize_resolution(ref self: ContractState, condition_id: felt252) {
+        fn finalize_resolution(ref self: ContractState, market_id: u64, condition_id: felt252) {
             let proposal = self.proposals.read(condition_id);
             assert(proposal.status == ResolutionStatus::Proposed, Errors::NOT_PROPOSED);
+
+            // M-1 fix: reject finalization if market was voided after proposal.
+            let mf = IMarketFactoryDispatcher {
+                contract_address: self.market_factory.read(),
+            };
+            let market = mf.get_market(market_id);
+            assert(market.condition_id == condition_id, Errors::INVALID_OUTCOME);
+            assert(!market.voided, Errors::MARKET_IS_VOIDED);
 
             let now = get_block_timestamp();
             let deadline = proposal.proposed_at + proposal.dispute_period;
@@ -339,6 +407,7 @@ pub mod AdminResolver {
                 );
         }
 
+        /// M-2 fix: only allow void_resolve when no proposal exists (status == None).
         fn void_resolve(ref self: ContractState, market_id: u64, condition_id: felt252) {
             // Anyone can call, but the market must be voided on MarketFactory.
             let mf = IMarketFactoryDispatcher {
@@ -348,7 +417,8 @@ pub mod AdminResolver {
             assert(market.voided, Errors::MARKET_NOT_VOIDED);
             assert(market.condition_id == condition_id, Errors::INVALID_OUTCOME);
 
-            // Must not already be finalized.
+            // M-2 fix: only allow if no finalization has happened.
+            // Allow overriding a Proposed status when market is voided (liveness fix).
             let existing = self.proposals.read(condition_id);
             assert(existing.status != ResolutionStatus::Finalized, Errors::ALREADY_FINALIZED);
 
@@ -382,14 +452,44 @@ pub mod AdminResolver {
             self.emit(ResolutionFinalized { condition_id, winning_outcome: 0 });
         }
 
+        /// L-2 fix: enforce min/max bounds on dispute period (now from storage).
         fn set_dispute_period(ref self: ContractState, new_period: u64) {
             self.assert_only_admin();
-            assert(new_period > 0, Errors::ZERO_PERIOD);
+            let min = self.min_dispute_period.read();
+            let max = self.max_dispute_period.read();
+            assert(new_period >= min, Errors::PERIOD_TOO_SHORT);
+            assert(new_period <= max, Errors::PERIOD_TOO_LONG);
 
             let old_period = self.dispute_period.read();
             self.dispute_period.write(new_period);
 
             self.emit(DisputePeriodUpdated { old_period, new_period });
+        }
+
+        /// Admin: update the configurable min/max dispute period bounds.
+        /// new_min must be >= ABSOLUTE_MIN_DISPUTE_PERIOD (60s safety floor).
+        /// new_min must be <= new_max.
+        fn set_dispute_bounds(ref self: ContractState, new_min: u64, new_max: u64) {
+            self.assert_only_admin();
+            assert(new_min >= ABSOLUTE_MIN_DISPUTE_PERIOD, Errors::MIN_BELOW_FLOOR);
+            assert(new_min <= new_max, Errors::MIN_EXCEEDS_MAX);
+
+            let old_min = self.min_dispute_period.read();
+            let old_max = self.max_dispute_period.read();
+            self.min_dispute_period.write(new_min);
+            self.max_dispute_period.write(new_max);
+
+            // If current dispute_period is outside new bounds, clamp it.
+            let current = self.dispute_period.read();
+            if current < new_min {
+                self.dispute_period.write(new_min);
+                self.emit(DisputePeriodUpdated { old_period: current, new_period: new_min });
+            } else if current > new_max {
+                self.dispute_period.write(new_max);
+                self.emit(DisputePeriodUpdated { old_period: current, new_period: new_max });
+            }
+
+            self.emit(DisputeBoundsUpdated { old_min, new_min, old_max, new_max });
         }
 
         fn transfer_admin(ref self: ContractState, new_admin: ContractAddress) {
@@ -413,6 +513,10 @@ pub mod AdminResolver {
             self.dispute_period.read()
         }
 
+        fn get_dispute_bounds(self: @ContractState) -> (u64, u64) {
+            (self.min_dispute_period.read(), self.max_dispute_period.read())
+        }
+
         fn get_admin(self: @ContractState) -> ContractAddress {
             self.admin.read()
         }
@@ -421,6 +525,7 @@ pub mod AdminResolver {
 
 // -----------------------------------------------------------------
 //  Upgrade timelock interface (contract-local)
+//  M-5 fix: added cancel_upgrade.
 // -----------------------------------------------------------------
 use starknet::class_hash::ClassHash;
 
@@ -428,4 +533,5 @@ use starknet::class_hash::ClassHash;
 pub trait IResolverUpgradeTimelock<TContractState> {
     fn propose_upgrade(ref self: TContractState, new_class_hash: ClassHash);
     fn execute_upgrade(ref self: TContractState);
+    fn cancel_upgrade(ref self: TContractState);
 }

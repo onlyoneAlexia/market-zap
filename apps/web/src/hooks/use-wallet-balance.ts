@@ -28,6 +28,7 @@ export function useWalletUSDCBalance(tokenAddress?: string) {
     },
     enabled: isConnected && !!address,
     staleTime: 15_000,
+    refetchOnMount: "always",
     refetchInterval: () => visibleRefetchInterval(20_000),
   });
 }

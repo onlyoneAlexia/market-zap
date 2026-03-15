@@ -8,24 +8,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/hooks/use-store";
+import { useIsOperator } from "@/hooks/use-operator";
 import { useMarkets } from "@/hooks/use-market";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
-const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS?.toLowerCase();
-
-function normalizeAddress(addr: string): string {
-  // Strip 0x, remove leading zeros, lowercase
-  return "0x" + addr.replace(/^0x0*/i, "").toLowerCase();
-}
-
 export default function ResolvePage() {
   const wallet = useAppStore((s) => s.wallet);
   const isConnected = !!wallet.address;
-  const isAdmin =
-    isConnected &&
-    !!ADMIN_ADDRESS &&
-    normalizeAddress(wallet.address!) === normalizeAddress(ADMIN_ADDRESS);
+  const isAdmin = useIsOperator(wallet.address ?? undefined);
 
   const { data, isLoading } = useMarkets();
   const { toast } = useToast();
@@ -38,26 +29,49 @@ export default function ResolvePage() {
     question: string;
   } | null>(null);
 
-  // Filter to markets past their resolution time that haven't been resolved
+  // Markets past resolution time that haven't been resolved/voided
   const now = Math.floor(Date.now() / 1000);
-  const resolvableMarkets = (data?.items ?? []).filter(
-    (m) => m.resolutionTime <= now && !m.resolved && !m.voided,
+  const allMarkets = data?.items ?? [];
+  const resolvableMarkets = allMarkets.filter(
+    (m) => m.resolutionTime <= now && !m.resolved && !m.voided && m.status !== "proposed",
+  );
+  const proposedMarkets = allMarkets.filter(
+    (m) => m.status === "proposed" && !m.resolved,
   );
 
   const handleResolve = async (marketId: string, winningOutcome: number) => {
     setPendingAction(`${marketId}-${winningOutcome}`);
     setConfirmTarget(null);
     try {
-      const result = await api.resolveMarket(marketId, winningOutcome);
+      const result = await api.proposeResolution(marketId, winningOutcome);
+      toast({
+        title: "Resolution proposed",
+        description: `Proposal tx: ${result.proposalTxHash.slice(0, 10)}...${result.proposalTxHash.slice(-6)}. Finalize after ${new Date(result.finalizeAfter).toLocaleTimeString()}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["markets"] });
+    } catch (err) {
+      toast({
+        title: "Proposal failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const handleFinalize = async (marketId: string) => {
+    setPendingAction(`finalize-${marketId}`);
+    try {
+      const result = await api.finalizeResolution(marketId);
       toast({
         title: "Market resolved",
         description: `Tx: ${result.txHash.slice(0, 10)}...${result.txHash.slice(-6)}`,
       });
-      // Refetch markets to update the list
       queryClient.invalidateQueries({ queryKey: ["markets"] });
     } catch (err) {
       toast({
-        title: "Resolution failed",
+        title: "Finalization failed",
         description: err instanceof Error ? err.message : "Unknown error",
         variant: "destructive",
       });
@@ -139,16 +153,53 @@ export default function ResolvePage() {
         </div>
       )}
 
+      {/* Proposed markets awaiting finalization */}
+      {proposedMarkets.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-bold font-mono tracking-wider text-amber">Awaiting Finalization</h2>
+          <div className="space-y-3">
+            {proposedMarkets.map((market) => (
+              <Card key={market.id} className="border-amber/30">
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <Badge variant="outline" className="border-amber/30 bg-amber/10 text-amber mb-1">
+                        Proposed
+                      </Badge>
+                      <h3 className="text-sm font-medium">{market.question}</h3>
+                      <p className="text-[10px] font-mono text-muted-foreground tracking-wider mt-1">
+                        Dispute period must elapse before finalizing
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="default"
+                      disabled={pendingAction !== null}
+                      onClick={() => handleFinalize(market.id)}
+                    >
+                      {pendingAction === `finalize-${market.id}` && (
+                        <Spinner className="mr-1 h-3.5 w-3.5 animate-spin" weight="bold" />
+                      )}
+                      Finalize
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
           <Spinner className="h-6 w-6 animate-spin text-muted-foreground" weight="bold" />
         </div>
-      ) : resolvableMarkets.length === 0 ? (
+      ) : resolvableMarkets.length === 0 && proposedMarkets.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-sm text-muted-foreground">
           <CheckCircle className="mb-3 h-8 w-8 text-muted-foreground" weight="fill" />
           <p>All markets are up to date. Nothing to resolve.</p>
         </div>
-      ) : (
+      ) : resolvableMarkets.length === 0 ? null : (
         <div className="space-y-3">
           {resolvableMarkets.map((market) => {
             const expired = new Date(market.resolutionTime * 1000);

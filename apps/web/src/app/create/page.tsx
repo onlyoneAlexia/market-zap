@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useCallback, useId, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Spinner, Coins } from "@phosphor-icons/react";
 import { ResolutionDatePicker } from "@/components/market/resolution-date-picker";
@@ -11,17 +11,42 @@ import { useWallet } from "@/features/wallet/use-wallet";
 import { useWalletUSDCBalance, useInvalidateAndPoll } from "@/hooks/use-wallet-balance";
 import { useToast } from "@/hooks/use-toast";
 import { queryKeys } from "@/lib/query-client";
-import {
-  CONTRACT_ADDRESSES,
-  COLLATERAL_TOKENS,
-  shortenAddress,
-  type CollateralTokenInfo,
-} from "@market-zap/shared";
+import { CONTRACT_ADDRESSES, COLLATERAL_TOKENS, shortenAddress, type CollateralTokenInfo } from "@market-zap/shared";
+import { PrivacyOverlay, useScanlineEffect } from "@/components/ui/dark-forest-overlay";
 
 const CATEGORIES = ["crypto", "politics", "sports", "culture", "science"] as const;
 
+const OUTCOME_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
+const OUTCOME_COLORS = [
+  { border: "border-yes/20", text: "text-yes" },
+  { border: "border-no/20", text: "text-no" },
+  { border: "border-amber-400/20", text: "text-amber-400" },
+  { border: "border-blue-400/20", text: "text-blue-400" },
+  { border: "border-purple-400/20", text: "text-purple-400" },
+  { border: "border-pink-400/20", text: "text-pink-400" },
+  { border: "border-teal-400/20", text: "text-teal-400" },
+  { border: "border-orange-400/20", text: "text-orange-400" },
+] as const;
+const MIN_QUESTION_LENGTH = 10;
+const MIN_RESOLUTION_LEAD_MS = 300_000;
+const WALLET_TIMEOUT_MS = 120_000;
+const MANUAL_MARKET_SEEDING_ENABLED =
+  process.env.NEXT_PUBLIC_ENABLE_MANUAL_MARKET_SEEDING === "true" ||
+  process.env.NODE_ENV !== "production";
+
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function hasInvalidThumbnailUrl(url: string): boolean {
+  if (!url) return false;
+
+  try {
+    const parsed = new URL(url);
+    return !["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return true;
+  }
 }
 
 export default function CreateMarketPage() {
@@ -42,6 +67,32 @@ export default function CreateMarketPage() {
   const [submitStep, setSubmitStep] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isMinting, setIsMinting] = useState(false);
+  const [thumbnailUrl, setThumbnailUrl] = useState("");
+  const [thumbnailPreviewFailed, setThumbnailPreviewFailed] = useState(false);
+  const [outcomesTouched, setOutcomesTouched] = useState(false);
+  const fireScanline = useScanlineEffect();
+  const transitioningRef = useRef(false);
+  const questionInputId = useId();
+  const questionErrorId = useId();
+  const thumbnailInputId = useId();
+  const thumbnailErrorId = useId();
+  const expiryDateButtonId = useId();
+  const expiryTimeInputId = useId();
+  const resolutionCriteriaInputId = useId();
+  const typeSummaryId = useId();
+  const validationErrorsId = useId();
+  const formErrorId = useId();
+
+  const handleTypeSwitch = useCallback(
+    (type: "public" | "private") => {
+      if ((type === marketType) || transitioningRef.current) return;
+      transitioningRef.current = true;
+      setMarketType(type);
+      fireScanline(type === "private" ? "dark" : "clean");
+      setTimeout(() => { transitioningRef.current = false; }, 1200);
+    },
+    [marketType, fireScanline],
+  );
 
   const tokenInfo = COLLATERAL_TOKENS[selectedToken] as CollateralTokenInfo;
   const bondTokenInfo = COLLATERAL_TOKENS.USDC as CollateralTokenInfo;
@@ -51,13 +102,23 @@ export default function CreateMarketPage() {
   const thresholdDisplay = (Number(bondTokenInfo.volumeThreshold) / bondDivisor).toString();
 
   const usdcAddress = CONTRACT_ADDRESSES.sepolia.USDC;
-  const { data: walletBalanceRaw, isLoading: balanceLoading, error: balanceError, refetch: refetchBalance } = useWalletUSDCBalance(usdcAddress);
+  const {
+    data: walletBalanceRaw,
+    isLoading: balanceLoading,
+    error: balanceError,
+    refetch: refetchBalance,
+  } = useWalletUSDCBalance(usdcAddress);
   const walletBalance = walletBalanceRaw != null ? BigInt(walletBalanceRaw) : undefined;
   const balanceLoaded = walletBalance !== undefined;
   const hasEnoughBalance = !balanceLoaded || walletBalance >= bondAmount;
-  const balanceDisplay = balanceLoaded
-    ? (Number(walletBalance) / bondDivisor).toFixed(2)
-    : null;
+  const balanceDisplay = balanceLoaded ? (Number(walletBalance) / bondDivisor).toFixed(2) : null;
+  const normalizedQuestion = question.trim();
+  const normalizedCriteria = resolutionCriteria.trim();
+  const normalizedOutcomes = outcomes.map((outcome) => outcome.trim());
+  const thumbnailError = hasInvalidThumbnailUrl(thumbnailUrl) || thumbnailPreviewFailed;
+  const nowMs = Date.now();
+  const resolutionTimeMs = resolutionDate ? Date.parse(resolutionDate) : null;
+  const hasResolutionTime = resolutionTimeMs !== null && Number.isFinite(resolutionTimeMs);
 
   const handleMintUSDC = async () => {
     setIsMinting(true);
@@ -85,26 +146,61 @@ export default function CreateMarketPage() {
   };
 
   const updateOutcome = (index: number, value: string) => {
-    const updated = [...outcomes];
-    updated[index] = value;
-    setOutcomes(updated);
+    setOutcomesTouched(true);
+    setOutcomes((current) => current.map((outcome, outcomeIndex) => (outcomeIndex === index ? value : outcome)));
   };
 
-  const questionTooShort = question.length > 0 && question.length < 10;
-  const emptyOutcomes = outcomes.some((o) => o.length === 0);
-  const duplicateOutcomes = !emptyOutcomes && new Set(outcomes.map((o) => o.trim().toLowerCase())).size < outcomes.length;
-  const resolutionInPast = resolutionDate ? new Date(resolutionDate).getTime() <= Date.now() : false;
-  const resolutionTooSoon = resolutionDate && !resolutionInPast
-    ? new Date(resolutionDate).getTime() - Date.now() < 300_000
-    : false;
+  const addOutcome = () => {
+    setOutcomes((current) => (current.length < OUTCOME_LABELS.length ? [...current, ""] : current));
+  };
+
+  const removeOutcome = (index: number) => {
+    setOutcomes((current) => (current.length > 2 ? current.filter((_, outcomeIndex) => outcomeIndex !== index) : current));
+  };
+
+  const questionTooShort = question.length > 0 && normalizedQuestion.length < MIN_QUESTION_LENGTH;
+  const emptyOutcomes = normalizedOutcomes.some((outcome) => outcome.length === 0);
+  const duplicateOutcomes =
+    !emptyOutcomes && new Set(normalizedOutcomes.map((outcome) => outcome.toLowerCase())).size < normalizedOutcomes.length;
+  const resolutionInPast = hasResolutionTime && resolutionTimeMs <= nowMs;
+  const resolutionTooSoon = hasResolutionTime && !resolutionInPast && resolutionTimeMs - nowMs < MIN_RESOLUTION_LEAD_MS;
   const isValid =
-    question.length >= 10 &&
+    normalizedQuestion.length >= MIN_QUESTION_LENGTH &&
     category &&
     !emptyOutcomes &&
     !duplicateOutcomes &&
-    resolutionDate &&
+    hasResolutionTime &&
     !resolutionInPast &&
-    !resolutionTooSoon;
+    !resolutionTooSoon &&
+    !thumbnailError;
+  const validationErrors = [
+    questionTooShort ? "Question must be at least 10 characters" : null,
+    !category ? "Select a category" : null,
+    !resolutionDate ? "Set an expiry date" : !hasResolutionTime ? "Set a valid expiry date" : null,
+  ].filter((message): message is string => Boolean(message));
+  const showValidationErrors = !isValid && (question || category || resolutionDate);
+  const submitDisabled = !isValid || isSubmitting || (isConnected && balanceLoading) || (isConnected && balanceLoaded && !hasEnoughBalance);
+  const submitLabel = !isConnected
+    ? "Connect Wallet"
+    : balanceLoading
+      ? "Checking balance..."
+      : balanceLoaded && !hasEnoughBalance
+        ? "Insufficient USDC"
+        : isSubmitting
+          ? submitStep || "Executing..."
+          : `Create Market [${bondDisplay} USDC Bond]`;
+  const typeSummary = marketType === "private"
+    ? "Dark markets stay hidden from browse and search. After creation, you will land on the market page with a direct tester link."
+    : "Public markets appear in browse and search right away, so testers can discover them from the Markets page.";
+  const submitDescribedBy = [
+    showValidationErrors ? validationErrorsId : null,
+    error ? formErrorId : null,
+  ].filter((value): value is string => Boolean(value)).join(" ") || undefined;
+
+  const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void handleSubmit();
+  };
 
   const handleSubmit = async () => {
     if (!isConnected) {
@@ -115,25 +211,36 @@ export default function CreateMarketPage() {
     setError(null);
 
     try {
+      const parsedResolutionTimeMs = resolutionTimeMs;
+      if (parsedResolutionTimeMs === null || !Number.isFinite(parsedResolutionTimeMs)) {
+        throw new Error("Set a valid expiry date");
+      }
+
+      setSubmitStep("Refreshing balance...");
+      const latestBalanceResult = await refetchBalance();
+      const latestBalance = latestBalanceResult.data != null
+        ? BigInt(latestBalanceResult.data)
+        : walletBalance;
+      if (latestBalance !== undefined && latestBalance < bondAmount) {
+        const have = (Number(latestBalance) / bondDivisor).toFixed(2);
+        throw new Error(`Insufficient USDC balance: you have ${have} but need ${bondDisplay}`);
+      }
+
       setSubmitStep("Sign in wallet...");
       const client = await ensureConnected();
       const collateralAddress = tokenInfo.addresses.sepolia;
-      const resolutionTimestamp = Math.floor(new Date(resolutionDate).getTime() / 1000);
+      const resolutionTimestamp = Math.floor(parsedResolutionTimeMs / 1000);
 
-      const createPromise = client.approveAndCreateMarket(
-        usdcAddress,
-        bondAmount,
-        {
-          question,
-          category,
-          outcomes,
-          collateralToken: collateralAddress,
-          resolutionTime: resolutionTimestamp,
-          marketType,
-        },
-      );
+      const createPromise = client.approveAndCreateMarket(usdcAddress, bondAmount, {
+        question: normalizedQuestion,
+        category,
+        outcomes: normalizedOutcomes,
+        collateralToken: collateralAddress,
+        resolutionTime: resolutionTimestamp,
+        marketType,
+      });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Wallet interaction timed out. Please try again.")), 120_000),
+        setTimeout(() => reject(new Error("Wallet interaction timed out. Please try again.")), WALLET_TIMEOUT_MS),
       );
       const createResult = await Promise.race([createPromise, timeoutPromise]);
 
@@ -141,11 +248,12 @@ export default function CreateMarketPage() {
         throw new Error(createResult.error ?? "Market creation failed");
       }
 
-      setSubmitStep("Verifying and seeding market...");
-      const seedResp = await fetch("/api/seed-market", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const createdMarketId = createResult.marketId?.toString();
+      const shareQuery = marketType === "private" ? "&share=1" : "";
+
+      if (MANUAL_MARKET_SEEDING_ENABLED) {
+        setSubmitStep("Preparing market...");
+        const seedPayload = {
           createTxHash: createResult.txHash,
           ...(createResult.marketId !== undefined
             ? {
@@ -153,38 +261,45 @@ export default function CreateMarketPage() {
                 onChainMarketId: createResult.marketId.toString(),
               }
             : {}),
-          ...(createResult.conditionId
-            ? { conditionId: createResult.conditionId }
-            : {}),
-          title: question,
-          description: resolutionCriteria || "",
+          ...(createResult.conditionId ? { conditionId: createResult.conditionId } : {}),
+          title: normalizedQuestion,
+          description: normalizedCriteria,
           category,
-          outcomeCount: outcomes.length,
-          outcomeLabels: outcomes,
+          outcomeCount: normalizedOutcomes.length,
+          outcomeLabels: normalizedOutcomes,
           collateralToken: collateralAddress,
-          resolutionSource: resolutionCriteria || "",
-          resolutionTime: new Date(resolutionDate).toISOString(),
+          resolutionSource: normalizedCriteria,
+          resolutionTime: new Date(parsedResolutionTimeMs).toISOString(),
           marketType,
-        }),
-      });
-      if (!seedResp.ok) {
-        const body = await seedResp.text().catch(() => "");
-        throw new Error(`Failed to seed market in engine (${seedResp.status}): ${body}`);
-      }
-
-      const seedData = await seedResp.json().catch(() => ({}));
-      if (seedData?.data?.ammReady === false) {
-        setError(
-          "Market created, but initial liquidity setup failed. " +
-          "The market will appear on the markets page once an admin provides liquidity. " +
-          "This is usually a transient issue — try creating the market again if it persists."
-        );
-        await queryClient.invalidateQueries({ queryKey: queryKeys.markets.all });
-        return;
+          ...(thumbnailUrl && !thumbnailError ? { thumbnailUrl } : {}),
+        };
+        const seedResp = await fetch("/api/seed-market", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(seedPayload),
+        });
+        if (!seedResp.ok) {
+          const body = await seedResp.text().catch(() => "");
+          throw new Error(`Failed to seed market in engine (${seedResp.status}): ${body}`);
+        }
+      } else {
+        setSubmitStep("Waiting for indexer...");
       }
 
       await queryClient.invalidateQueries({ queryKey: queryKeys.markets.all });
-      router.push("/markets");
+      const targetPath = createdMarketId
+        ? `/markets/${createdMarketId}?created=1${shareQuery}${MANUAL_MARKET_SEEDING_ENABLED ? "" : "&indexing=1"}`
+        : "/markets";
+      toast({
+        title: marketType === "private" ? "Private market created" : "Market created",
+        description: MANUAL_MARKET_SEEDING_ENABLED
+          ? marketType === "private"
+            ? "You will land on the market page with a shareable tester link."
+            : "Your market is now visible in the Sepolia beta marketplace."
+          : "On-chain create succeeded. The market page will refresh automatically once the indexer catches up.",
+        variant: "success",
+      });
+      router.push(targetPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create market");
     } finally {
@@ -193,259 +308,419 @@ export default function CreateMarketPage() {
     }
   };
 
+  const isDark = marketType === "private";
+
+  // Theme helpers — cold blue-gray when dark, normal otherwise
+  const t = {
+    panel: isDark
+      ? "bg-[rgba(10,15,25,0.88)] border-[rgba(70,90,115,0.2)] shadow-[0_0_60px_rgba(30,45,65,0.08)]"
+      : "bg-card/50 border-border",
+    headerBorder: isDark ? "border-[rgba(70,90,115,0.15)]" : "border-border",
+    accent: isDark ? "text-slate-400" : "text-primary",
+    accentMuted: isDark ? "text-slate-400/40" : "text-muted-foreground",
+    badge: isDark ? "text-slate-400" : "text-cyan",
+    inputBg: isDark ? "bg-[rgba(5,10,18,0.5)] border-[rgba(70,90,115,0.15)]" : "bg-background border-border",
+    inputText: isDark ? "text-slate-400/80 placeholder:text-slate-500/30" : "text-cyan placeholder:text-muted-foreground",
+    label: isDark ? "text-slate-400/50" : "text-muted-foreground",
+    pillActive: isDark
+      ? "bg-[rgba(70,90,115,0.15)] text-slate-400 border-slate-400/30"
+      : "bg-primary/15 text-primary border-primary/30",
+    pillInactive: isDark
+      ? "text-slate-500/50 border-[rgba(70,90,115,0.15)] hover:text-slate-400 hover:border-slate-400/30"
+      : "text-muted-foreground border-border hover:text-cyan hover:border-cyan/30",
+    link: isDark ? "text-slate-400/70 hover:text-slate-400/50" : "text-cyan hover:text-cyan/80",
+    collateralBadge: isDark
+      ? "border-slate-400/20 bg-slate-400/5 text-slate-400"
+      : "border-primary/20 bg-primary/5 text-primary",
+    bondBox: isDark ? "bg-[rgba(5,10,18,0.5)] border-[rgba(70,90,115,0.2)]" : "bg-background border-primary/20",
+    bondLabel: isDark ? "text-slate-400" : "text-primary",
+    tokenActive: isDark
+      ? "border-slate-400/30 bg-slate-400/10 text-slate-400"
+      : "border-primary/30 bg-primary/10 text-primary",
+    tokenInactive: isDark
+      ? "border-[rgba(70,90,115,0.15)] text-slate-500/50 hover:text-slate-400 hover:border-slate-400/20"
+      : "border-border text-muted-foreground hover:text-foreground hover:border-primary/20",
+    mintLink: isDark ? "text-slate-400/70 hover:text-slate-400/50" : "text-cyan hover:text-cyan/80",
+    removeBtnBorder: isDark ? "border-[rgba(70,90,115,0.15)]" : "border-border",
+    submitBtn: isDark
+      ? "bg-slate-400/10 border-slate-400/30 text-slate-400 hover:bg-slate-400/15"
+      : "",
+  };
+
+  // Outcome colors shift to muted slate tones in dark-forest mode
+  const DARK_OUTCOME_COLORS = [
+    { border: "border-slate-400/15", text: "text-slate-400" },
+    { border: "border-slate-500/15", text: "text-slate-500" },
+    { border: "border-slate-400/15", text: "text-slate-400" },
+    { border: "border-slate-500/15", text: "text-slate-500" },
+    { border: "border-slate-400/15", text: "text-slate-400" },
+    { border: "border-slate-500/15", text: "text-slate-500" },
+    { border: "border-slate-400/15", text: "text-slate-400" },
+    { border: "border-slate-500/15", text: "text-slate-500" },
+  ] as const;
+
   return (
     <PageTransition>
-    <div className="container mx-auto max-w-2xl px-2 py-4 sm:px-4">
-      {/* Terminal panel */}
-      <div className="bg-card/50 border border-border rounded overflow-hidden backdrop-blur-xl terminal-glow">
-        {/* Header bar */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-          <div className="flex items-center gap-2 font-mono text-xs">
-            <span className="text-primary font-bold">Create</span>
-            <span className="text-muted-foreground">New Market</span>
+      <div className="container mx-auto max-w-2xl px-2 py-4 sm:px-4 relative">
+        {/* Terminal panel */}
+        <div className={`relative border rounded backdrop-blur-xl terminal-glow transition-all duration-1000 ${t.panel}`}>
+          {/* Privacy overlay — clipped to card bounds */}
+          <div className="absolute inset-0 overflow-hidden rounded pointer-events-none z-0">
+            <PrivacyOverlay active={isDark} />
           </div>
-          <span className="text-[10px] font-mono text-cyan">Bond: {bondDisplay} USDC</span>
-        </div>
-
-        <div className="p-4 space-y-4">
-          {/* Question — terminal input with > prefix */}
-          <div>
-            <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Question</label>
-            <div className={`flex items-center bg-background border rounded px-3 py-2.5 ${questionTooShort ? "border-no/50" : "border-border"}`}>
-              <span className="text-primary font-mono text-sm mr-2 font-bold">&gt;</span>
-              <input
-                type="text"
-                placeholder="Enter market question..."
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                className="bg-transparent text-sm font-mono w-full focus:outline-none text-cyan placeholder:text-muted-foreground"
-              />
+          {/* Header bar */}
+          <div className={`relative z-[1] flex items-center justify-between px-3 py-2 border-b transition-colors duration-1000 ${t.headerBorder}`}>
+            <div className="flex items-center gap-2 font-mono text-xs">
+              <span className={`font-bold transition-colors duration-1000 ${t.accent}`}>Create</span>
+              <span className={`transition-colors duration-1000 ${t.accentMuted}`}>New Market</span>
             </div>
-            {questionTooShort && (
-              <p className="text-[10px] font-mono text-no mt-1">Min 10 characters ({question.length}/10)</p>
-            )}
+            <span className={`text-[10px] font-mono transition-colors duration-1000 ${t.badge}`}>Bond: {bondDisplay} USDC</span>
           </div>
 
-          {/* Category — terminal pills */}
-          <div>
-            <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Category</label>
-            <div className="flex gap-1">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setCategory(cat)}
-                  className={`px-3 py-1.5 text-[11px] font-mono font-bold rounded border transition-colors tracking-wider ${
-                    category === cat
-                      ? "bg-primary/15 text-primary border-primary/30"
-                      : "text-muted-foreground border-border hover:text-cyan hover:border-cyan/30"
-                  }`}
-                >
-                  {capitalize(cat)}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Outcomes — 2-col grid with A:/B: prefixes */}
-          <div>
-            <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Outcomes</label>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex items-center bg-background border border-yes/20 rounded px-3 py-2">
-                <span className="text-yes font-mono text-xs mr-2 font-bold">A:</span>
-                <input
-                  value={outcomes[0]}
-                  onChange={(e) => updateOutcome(0, e.target.value)}
-                  className="bg-transparent text-sm font-mono w-full focus:outline-none text-yes"
-                />
-              </div>
-              <div className="flex items-center bg-background border border-no/20 rounded px-3 py-2">
-                <span className="text-no font-mono text-xs mr-2 font-bold">B:</span>
-                <input
-                  value={outcomes[1]}
-                  onChange={(e) => updateOutcome(1, e.target.value)}
-                  className="bg-transparent text-sm font-mono w-full focus:outline-none text-no"
-                />
-              </div>
-            </div>
-            {emptyOutcomes && (
-              <p className="text-[10px] font-mono text-no mt-1">All outcomes required</p>
-            )}
-            {duplicateOutcomes && (
-              <p className="text-[10px] font-mono text-no mt-1">Outcomes must be unique</p>
-            )}
-          </div>
-
-          {/* Expiry + Type — same row */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Expiry</label>
-              <ResolutionDatePicker
-                value={resolutionDate}
-                onChange={setResolutionDate}
-                hasError={resolutionInPast || !!resolutionTooSoon}
-              />
-              {resolutionInPast && (
-                <p className="text-[10px] font-mono text-no mt-1">Must be in the future</p>
-              )}
-              {resolutionTooSoon && (
-                <p className="text-[10px] font-mono text-no mt-1">Min 5 minutes from now</p>
-              )}
-            </div>
-            <div>
-              <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Type</label>
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  onClick={() => setMarketType("public")}
-                  className={`py-2.5 text-[11px] font-mono font-bold rounded border transition-colors tracking-wider ${
-                    marketType === "public"
-                      ? "bg-cyan/15 text-cyan border-cyan/30"
-                      : "text-muted-foreground border-border hover:text-foreground"
-                  }`}
-                >
-                  Public
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMarketType("private")}
-                  className={`py-2.5 text-[11px] font-mono font-bold rounded border transition-colors tracking-wider ${
-                    marketType === "private"
-                      ? "bg-amber/15 text-amber border-amber/30"
-                      : "text-muted-foreground border-border hover:text-foreground"
-                  }`}
-                >
-                  Dark
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Resolution criteria — optional */}
-          <div>
-            <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">
-              Resolution criteria (optional)
-            </label>
-            <div className="flex items-start bg-background border border-border rounded px-3 py-2">
-              <span className="text-primary font-mono text-sm mr-2 font-bold mt-0.5">&gt;</span>
-              <textarea
-                placeholder="Describe how this market will be resolved..."
-                value={resolutionCriteria}
-                onChange={(e) => setResolutionCriteria(e.target.value)}
-                className="bg-transparent text-xs font-mono w-full min-h-[60px] focus:outline-none text-cyan placeholder:text-muted-foreground resize-none"
-              />
-            </div>
-          </div>
-
-          {/* Collateral token */}
-          <div>
-            <label className="block text-[10px] font-mono font-bold text-muted-foreground tracking-wider mb-1">Collateral</label>
-            <div className="flex items-center gap-2">
-              <span className="rounded border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs font-mono font-bold tracking-wider text-primary">
-                {tokenInfo.symbol}
+          <form className="relative z-[1] p-4 space-y-4" onSubmit={handleFormSubmit}>
+            <div className={`rounded border px-3 py-2 text-[10px] font-mono leading-relaxed transition-all duration-1000 ${t.bondBox}`}>
+              <span className={`font-bold tracking-wider ${t.bondLabel}`}>Sepolia beta.</span>{" "}
+              <span className={`${t.accentMuted}`}>
+                Use test funds only. Public markets are discoverable in browse, while dark markets stay hidden and are shared by direct link.
               </span>
-              <button
-                type="button"
-                onClick={() => setShowTokenSelector(!showTokenSelector)}
-                className="text-[10px] font-mono tracking-wider text-cyan hover:text-cyan/80 transition-colors"
-              >
-                {showTokenSelector ? "[ Hide ]" : "[ Change ]"}
-              </button>
             </div>
-            {showTokenSelector && (
-              <div className="flex gap-1 mt-1">
-                {Object.entries(COLLATERAL_TOKENS).map(([key, info]) => (
+
+            {/* Question */}
+            <div>
+              <label
+                htmlFor={questionInputId}
+                className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}
+              >
+                Question
+              </label>
+              <div
+                className={`flex items-center border rounded px-3 py-2.5 transition-all duration-1000 ${questionTooShort ? "border-no/50" : ""} ${t.inputBg}`}
+              >
+                <span className={`font-mono text-sm mr-2 font-bold transition-colors duration-1000 ${t.accent}`}>&gt;</span>
+                <input
+                  id={questionInputId}
+                  type="text"
+                  placeholder="Enter market question..."
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  aria-invalid={questionTooShort}
+                  aria-describedby={questionTooShort ? questionErrorId : undefined}
+                  className={`bg-transparent text-sm font-mono w-full focus:outline-none transition-colors duration-1000 ${t.inputText}`}
+                />
+              </div>
+              {questionTooShort && (
+                <p id={questionErrorId} className="text-[10px] font-mono text-no mt-1">
+                  Min {MIN_QUESTION_LENGTH} characters ({normalizedQuestion.length}/{MIN_QUESTION_LENGTH})
+                </p>
+              )}
+            </div>
+
+            {/* Thumbnail URL */}
+            <div>
+              <label
+                htmlFor={thumbnailInputId}
+                className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}
+              >
+                Thumbnail URL (optional)
+              </label>
+              <div
+                className={`flex items-center border rounded px-3 py-2.5 transition-all duration-1000 ${thumbnailError ? "border-no/50" : ""} ${t.inputBg}`}
+              >
+                <span className={`font-mono text-sm mr-2 font-bold transition-colors duration-1000 ${t.accent}`}>&gt;</span>
+                <input
+                  id={thumbnailInputId}
+                  type="url"
+                  placeholder="https://example.com/image.png"
+                  value={thumbnailUrl}
+                  onChange={(e) => {
+                    setThumbnailUrl(e.target.value);
+                    setThumbnailPreviewFailed(false);
+                  }}
+                  aria-invalid={thumbnailError}
+                  aria-describedby={thumbnailError ? thumbnailErrorId : undefined}
+                  className={`bg-transparent text-sm font-mono w-full focus:outline-none transition-colors duration-1000 ${t.inputText}`}
+                />
+              </div>
+              {thumbnailError && (
+                <p id={thumbnailErrorId} className="text-[10px] font-mono text-no mt-1">
+                  Must be a valid http(s) URL
+                </p>
+              )}
+              {thumbnailUrl && !thumbnailError && (
+                <div className={`mt-2 rounded border overflow-hidden transition-all duration-1000 ${t.inputBg}`}>
+                  <img
+                    src={thumbnailUrl}
+                    alt="Preview"
+                    className="h-24 w-full object-cover"
+                    onError={() => setThumbnailPreviewFailed(true)}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Category */}
+            <fieldset>
+              <legend className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}>Category</legend>
+              <div className="flex flex-wrap gap-1">
+                {CATEGORIES.map((cat) => (
                   <button
-                    key={key}
+                    key={cat}
                     type="button"
-                    onClick={() => {
-                      setSelectedToken(key);
-                      setShowTokenSelector(false);
-                    }}
-                    className={`rounded border px-3 py-1.5 text-[11px] font-mono font-bold tracking-wider transition-colors ${
-                      selectedToken === key
-                        ? "border-primary/30 bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:text-foreground hover:border-primary/20"
+                    onClick={() => setCategory(cat)}
+                    aria-pressed={category === cat}
+                    className={`px-3 py-1.5 text-[11px] font-mono font-bold rounded border transition-all duration-500 tracking-wider ${
+                      category === cat ? t.pillActive : t.pillInactive
                     }`}
                   >
-                    {(info as CollateralTokenInfo).symbol}
+                    {capitalize(cat)}
                   </button>
                 ))}
               </div>
-            )}
-          </div>
+            </fieldset>
 
-          {/* Bond info — terminal key-value pairs */}
-          <div className="bg-background border border-primary/20 rounded p-3 font-mono text-xs space-y-1">
-            <div className="flex justify-between">
-              <span className="text-primary">Bond required:</span>
-              <span className="text-foreground font-bold">{bondDisplay} USDC</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Refund threshold:</span>
-              <span className="text-muted-foreground">${thresholdDisplay} volume</span>
-            </div>
-            {isConnected && (
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Wallet balance:</span>
-                <div className="flex items-center gap-2">
-                  <span className={`font-bold ${balanceLoaded && !hasEnoughBalance ? "text-no" : "text-yes"}`}>
-                    {balanceLoading ? "..." : balanceError ? "Error" : balanceDisplay ?? "—"} USDC
-                  </span>
-                  {balanceLoaded && !hasEnoughBalance && (
-                    <button
-                      onClick={handleMintUSDC}
-                      disabled={isMinting}
-                      className="text-[10px] text-cyan hover:text-cyan/80 transition-colors"
-                    >
-                      {isMinting ? (
-                        <Spinner className="h-3 w-3 animate-spin" weight="bold" />
-                      ) : (
-                        <span className="flex items-center gap-1">
-                          <Coins className="h-3 w-3" weight="duotone" />
-                          Mint
-                        </span>
+            {/* Outcomes */}
+            <fieldset>
+              <legend className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}>
+                Outcomes ({outcomes.length}/{OUTCOME_LABELS.length})
+              </legend>
+              <div className="space-y-2">
+                {outcomes.map((outcome, i) => {
+                  const color = isDark
+                    ? (DARK_OUTCOME_COLORS[i] ?? DARK_OUTCOME_COLORS[0])
+                    : (OUTCOME_COLORS[i] ?? OUTCOME_COLORS[0]);
+                  return (
+                    <div key={i} className="flex items-center gap-2">
+                      <div className={`flex-1 flex items-center border rounded px-3 py-2 transition-all duration-1000 ${color.border} ${isDark ? "bg-[rgba(5,10,18,0.5)]" : "bg-background"}`}>
+                        <span className={`font-mono text-xs mr-2 font-bold transition-colors duration-1000 ${color.text}`}>{OUTCOME_LABELS[i]}:</span>
+                        <input
+                          value={outcome}
+                          onChange={(e) => updateOutcome(i, e.target.value)}
+                          placeholder={i === 0 ? "Yes" : i === 1 ? "No" : `Outcome ${OUTCOME_LABELS[i]}`}
+                          aria-label={`Outcome ${OUTCOME_LABELS[i]}`}
+                          className={`bg-transparent text-sm font-mono w-full focus:outline-none transition-colors duration-1000 ${color.text}`}
+                        />
+                      </div>
+                      {outcomes.length > 2 && (
+                        <button
+                          type="button"
+                          onClick={() => removeOutcome(i)}
+                          className={`text-muted-foreground hover:text-no transition-colors text-xs font-mono px-1.5 py-1 rounded border hover:border-no/30 ${t.removeBtnBorder}`}
+                        >
+                          x
+                        </button>
                       )}
-                    </button>
-                  )}
+                    </div>
+                  );
+                })}
+              </div>
+              {outcomes.length < OUTCOME_LABELS.length && (
+                <button
+                  type="button"
+                  onClick={addOutcome}
+                  className={`mt-2 text-[10px] font-mono tracking-wider transition-colors duration-1000 ${t.link}`}
+                >
+                  + Add outcome
+                </button>
+              )}
+              {outcomesTouched && emptyOutcomes && <p className="text-[10px] font-mono text-no mt-1">All outcomes required</p>}
+              {duplicateOutcomes && <p className="text-[10px] font-mono text-no mt-1">Outcomes must be unique</p>}
+            </fieldset>
+
+            {/* Expiry + Type */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <fieldset>
+                <legend className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}>Expiry</legend>
+                <ResolutionDatePicker
+                  value={resolutionDate}
+                  onChange={setResolutionDate}
+                  hasError={resolutionInPast || !!resolutionTooSoon}
+                  dateButtonId={expiryDateButtonId}
+                  timeInputId={expiryTimeInputId}
+                  privacyMode={isDark}
+                />
+                {resolutionInPast && <p className="text-[10px] font-mono text-no mt-1">Must be in the future</p>}
+                {resolutionTooSoon && <p className="text-[10px] font-mono text-no mt-1">Min 5 minutes from now</p>}
+              </fieldset>
+              <fieldset>
+                <legend className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}>Type</legend>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleTypeSwitch("public")}
+                    aria-pressed={marketType === "public"}
+                    aria-describedby={typeSummaryId}
+                    className={`group relative py-2.5 text-[11px] font-mono font-bold rounded border transition-all duration-500 tracking-wider ${
+                      marketType === "public"
+                        ? isDark ? "bg-slate-400/10 text-slate-400 border-slate-400/25" : "bg-cyan/15 text-cyan border-cyan/30"
+                        : isDark ? "text-slate-500/50 border-[rgba(70,90,115,0.15)] hover:text-slate-400" : "text-muted-foreground border-border hover:text-foreground"
+                    }`}
+                  >
+                    Public
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 px-3 py-2 rounded-lg border border-border bg-popover/95 backdrop-blur-xl text-[9px] leading-relaxed whitespace-nowrap pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 z-50">
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-slate-400" : "bg-cyan"}`} />Visible on marketplace &amp; search</div>
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-slate-400" : "bg-cyan"}`} />Open order book for all traders</div>
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-slate-400" : "bg-cyan"}`} />Eligible for volume rewards</div>
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-popover/95" />
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleTypeSwitch("private")}
+                    aria-pressed={marketType === "private"}
+                    aria-describedby={typeSummaryId}
+                    className={`group relative py-2.5 text-[11px] font-mono font-bold rounded border transition-all duration-500 tracking-wider ${
+                      marketType === "private"
+                        ? isDark ? "bg-[rgba(120,90,60,0.12)] text-[#d4a055] border-[rgba(212,160,85,0.3)] shadow-[0_0_15px_rgba(120,90,60,0.08)]" : "bg-amber/15 text-amber border-amber/30"
+                        : isDark ? "text-slate-500/50 border-[rgba(70,90,115,0.15)] hover:text-slate-400" : "text-muted-foreground border-border hover:text-foreground"
+                    }`}
+                  >
+                    Dark
+                    <div className="absolute bottom-full right-0 mb-2.5 px-3 py-2 rounded-lg border border-border bg-popover/95 backdrop-blur-xl text-[9px] leading-relaxed whitespace-nowrap pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 z-50">
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-[#d4a055]" : "bg-amber"}`} />Hidden from browse &amp; search</div>
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-[#d4a055]" : "bg-amber"}`} />Accessible via direct link only</div>
+                      <div className="flex items-center gap-2 py-0.5"><span className={`w-1 h-1 rounded-full shrink-0 ${isDark ? "bg-[#d4a055]" : "bg-amber"}`} />Private order book for participants</div>
+                      <div className="absolute top-full right-4 border-[5px] border-transparent border-t-popover/95" />
+                    </div>
+                  </button>
                 </div>
+                <p
+                  id={typeSummaryId}
+                  className={`mt-2 text-[10px] font-mono leading-relaxed transition-colors duration-1000 ${t.accentMuted}`}
+                >
+                  {typeSummary}
+                </p>
+              </fieldset>
+            </div>
+
+            {/* Resolution criteria */}
+            <div>
+              <label
+                htmlFor={resolutionCriteriaInputId}
+                className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}
+              >
+                Resolution criteria (optional)
+              </label>
+              <div className={`flex items-start border rounded px-3 py-2 transition-all duration-1000 ${t.inputBg}`}>
+                <span className={`font-mono text-sm mr-2 font-bold mt-0.5 transition-colors duration-1000 ${t.accent}`}>&gt;</span>
+                <textarea
+                  id={resolutionCriteriaInputId}
+                  placeholder="Describe how this market will be resolved..."
+                  value={resolutionCriteria}
+                  onChange={(e) => setResolutionCriteria(e.target.value)}
+                  className={`bg-transparent text-xs font-mono w-full min-h-[60px] focus:outline-none resize-none transition-colors duration-1000 ${t.inputText}`}
+                />
+              </div>
+            </div>
+
+            {/* Collateral token */}
+            <div>
+              <label className={`block text-[10px] font-mono font-bold tracking-wider mb-1 transition-colors duration-1000 ${t.label}`}>Collateral</label>
+              <div className="flex items-center gap-2">
+                <span className={`rounded border px-3 py-1.5 text-xs font-mono font-bold tracking-wider transition-all duration-1000 ${t.collateralBadge}`}>
+                  {tokenInfo.symbol}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowTokenSelector(!showTokenSelector)}
+                  className={`text-[10px] font-mono tracking-wider transition-colors duration-1000 ${t.link}`}
+                >
+                  {showTokenSelector ? "[ Hide ]" : "[ Change ]"}
+                </button>
+              </div>
+              {showTokenSelector && (
+                <div className="flex gap-1 mt-1">
+                  {Object.entries(COLLATERAL_TOKENS).map(([key, info]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setSelectedToken(key);
+                        setShowTokenSelector(false);
+                      }}
+                      className={`rounded border px-3 py-1.5 text-[11px] font-mono font-bold tracking-wider transition-all duration-500 ${
+                        selectedToken === key ? t.tokenActive : t.tokenInactive
+                      }`}
+                    >
+                      {(info as CollateralTokenInfo).symbol}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bond info */}
+            <div className={`border rounded p-3 font-mono text-xs space-y-1 transition-all duration-1000 ${t.bondBox}`}>
+              <div className="flex justify-between">
+                <span className={`transition-colors duration-1000 ${t.bondLabel}`}>Bond required:</span>
+                <span className="text-foreground font-bold">{bondDisplay} USDC</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`transition-colors duration-1000 ${t.accentMuted}`}>Refund threshold:</span>
+                <span className={`transition-colors duration-1000 ${t.accentMuted}`}>${thresholdDisplay} volume</span>
+              </div>
+              {isConnected && (
+                <div className="flex justify-between items-center">
+                  <span className={`transition-colors duration-1000 ${t.accentMuted}`}>Wallet balance:</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-bold ${balanceError ? "text-muted-foreground" : balanceLoaded && !hasEnoughBalance ? "text-no" : "text-yes"}`}>
+                      {balanceLoading ? "..." : balanceError ? "—" : balanceDisplay ?? "—"} USDC
+                    </span>
+                    {balanceLoaded && !hasEnoughBalance && (
+                      <button
+                        type="button"
+                        onClick={handleMintUSDC}
+                        disabled={isMinting}
+                        className={`text-[10px] transition-colors duration-1000 ${t.mintLink}`}
+                      >
+                        {isMinting ? (
+                          <Spinner className="h-3 w-3 animate-spin" weight="bold" />
+                        ) : (
+                          <span className="flex items-center gap-1">
+                            <Coins className="h-3 w-3" weight="duotone" />
+                            Mint
+                          </span>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Validation errors */}
+            {showValidationErrors && (
+              <div
+                id={validationErrorsId}
+                role="alert"
+                aria-live="polite"
+                className="space-y-0.5 text-[10px] font-mono text-no tracking-wider"
+              >
+                {validationErrors.map((validationError) => (
+                  <p key={validationError}>{validationError}</p>
+                ))}
               </div>
             )}
-          </div>
 
-          {/* Validation errors */}
-          {!isValid && (question || category || resolutionDate) && (
-            <div className="space-y-0.5 text-[10px] font-mono text-no tracking-wider">
-              {question.length > 0 && question.length < 10 && <p>Question must be at least 10 characters</p>}
-              {!category && <p>Select a category</p>}
-              {!resolutionDate && <p>Set an expiry date</p>}
-            </div>
-          )}
+            {error && (
+              <p id={formErrorId} role="alert" className="text-[10px] font-mono text-no">
+                {error}
+              </p>
+            )}
 
-          {error && (
-            <p className="text-[10px] font-mono text-no">{error}</p>
-          )}
-
-          {/* Submit — terminal execute */}
-          <Button
-            onClick={handleSubmit}
-            disabled={!isValid || isSubmitting || (isConnected && balanceLoaded && !hasEnoughBalance)}
-            size="lg"
-            className="w-full font-mono tracking-wider text-sm"
-          >
-            {isSubmitting ? (
-              <Spinner className="mr-2 h-4 w-4 animate-spin" weight="bold" />
-            ) : null}
-            {!isConnected
-              ? "Connect Wallet"
-              : balanceLoaded && !hasEnoughBalance
-                ? "Insufficient USDC"
-                : isSubmitting
-                  ? (submitStep || "Executing...")
-                  : `Create Market [${bondDisplay} USDC Bond]`}
-          </Button>
+            {/* Submit */}
+            <Button
+              type="submit"
+              disabled={submitDisabled}
+              aria-describedby={submitDescribedBy}
+              size="lg"
+              className={`w-full font-mono tracking-wider text-sm transition-all duration-1000 ${t.submitBtn}`}
+            >
+              {isSubmitting ? <Spinner className="mr-2 h-4 w-4 animate-spin" weight="bold" /> : null}
+              {submitLabel}
+            </Button>
+          </form>
         </div>
       </div>
-    </div>
     </PageTransition>
   );
 }

@@ -1,0 +1,68 @@
+# ── Stage 1: Install dependencies ──────────────────────────────────
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+
+# Copy root workspace manifests
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY services/engine/package.json services/engine/
+
+# Install all workspace deps (production + dev for build step)
+RUN npm ci --workspace=packages/shared --workspace=services/engine
+
+# ── Stage 2: Build shared → engine ────────────────────────────────
+FROM deps AS build
+
+# Copy source for shared package
+COPY tsconfig.base.json ./
+COPY packages/shared/ packages/shared/
+
+# Build shared first (engine depends on it)
+RUN npm run build --workspace=packages/shared
+
+# Copy engine source and build
+COPY services/engine/ services/engine/
+RUN npm run build --workspace=services/engine
+
+# ── Stage 3: Production image ─────────────────────────────────────
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Install starkli for keystore decryption (optional, only if using keystores)
+# RUN apk add --no-cache curl && \
+#     curl -L https://raw.githubusercontent.com/software-mansion/starkli/main/scripts/install.sh | sh
+
+ENV NODE_ENV=production
+
+# Copy root manifests
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY services/engine/package.json services/engine/
+
+# Install production deps only
+RUN npm ci --workspace=packages/shared --workspace=services/engine --omit=dev
+
+# Copy built artifacts
+COPY --from=build /app/packages/shared/dist/ packages/shared/dist/
+COPY --from=build /app/packages/shared/src/abis/ packages/shared/src/abis/
+COPY --from=build /app/packages/shared/src/addresses/ packages/shared/src/addresses/
+COPY --from=build /app/services/engine/dist/ services/engine/dist/
+
+# The shared package exports from src/ for bundlers but main points to dist/
+# Copy the source index so both resolution paths work
+COPY --from=build /app/packages/shared/src/index.ts packages/shared/src/index.ts
+COPY --from=build /app/packages/shared/src/types/ packages/shared/src/types/
+COPY --from=build /app/packages/shared/src/contracts.ts packages/shared/src/contracts.ts
+COPY --from=build /app/packages/shared/src/constants.ts packages/shared/src/constants.ts
+COPY --from=build /app/packages/shared/src/api-client.ts packages/shared/src/api-client.ts
+COPY --from=build /app/packages/shared/src/starkzap.ts packages/shared/src/starkzap.ts
+COPY --from=build /app/packages/shared/src/order-hash.ts packages/shared/src/order-hash.ts
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3001/api/health || exit 1
+
+CMD ["node", "services/engine/dist/index.js"]

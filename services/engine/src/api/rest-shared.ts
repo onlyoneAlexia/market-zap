@@ -107,12 +107,12 @@ export function shortAddress(address: string): string {
 
 export function mapPriceHistoryPoint(point: {
   timestamp: Date | string;
-  price: string;
+  prices: string[];
   volume?: string | null;
 }) {
   return {
     timestamp: Math.floor(new Date(point.timestamp).getTime() / 1000),
-    prices: [point.price],
+    prices: point.prices,
     volume: point.volume ?? undefined,
   };
 }
@@ -138,11 +138,14 @@ export const PaginationSchema = z.object({
 export const MarketListSchema = PaginationSchema.extend({
   category: z.string().optional(),
   status: z.string().optional(),
+  marketType: z.enum(["public", "private"]).optional(),
+  sortBy: z.enum(["volume", "createdAt", "resolutionTime"]).optional(),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  search: z.string().max(200).optional(),
 });
 
 export const PriceHistorySchema = z.object({
-  outcomeIndex: z.coerce.number().int().min(0).default(0),
-  interval: z.enum(["1h", "6h", "1d"]).default("1h"),
+  interval: z.enum(["5m", "15m", "1h", "6h", "1d"]).default("1h"),
   limit: z.coerce.number().int().min(1).max(1000).default(168),
 });
 
@@ -248,6 +251,7 @@ export function formatMarket(row: any) {
     totalVolume: row.total_volume ?? "0",
     bondRefunded: false,
     marketType: row.market_type ?? "public",
+    thumbnailUrl: row.thumbnail_url ?? null,
   };
 }
 
@@ -289,19 +293,37 @@ export function requireAuth(
   res: Response,
   next: NextFunction,
 ): void {
-  const apiKey = process.env.ENGINE_API_KEY;
-  if (!apiKey) {
-    next();
-    return;
-  }
-
-  const header = req.headers.authorization;
-  if (!header || header !== `Bearer ${apiKey}`) {
-    res.status(401).json({ error: "Unauthorized" });
+  const authResult = authorizeAdminRequest(req);
+  if (!authResult.ok) {
+    res.status(authResult.status).json({ error: authResult.error });
     return;
   }
 
   next();
+}
+
+export function authorizeAdminRequest(
+  req: Request,
+): { ok: true } | { ok: false; status: number; error: string } {
+  const apiKey = process.env.ENGINE_API_KEY?.trim();
+  if (apiKey) {
+    const header = req.headers.authorization;
+    if (header === `Bearer ${apiKey}`) {
+      return { ok: true };
+    }
+
+    return { ok: false, status: 401, error: "Unauthorized" };
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    status: 503,
+    error: "Admin API authentication is not configured",
+  };
 }
 
 export function errorHandler(

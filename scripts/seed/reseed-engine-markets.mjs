@@ -1,59 +1,68 @@
-/**
- * Re-seed markets: create fresh on-chain markets with correct collateral, wipe engine, re-seed.
- *
- * Steps:
- * 1. Mint OLD USDC for bond payments (factory requires OLD USDC as bond_token)
- * 2. Create 3 new on-chain markets with NEW USDC (6 decimals) as collateral
- * 3. Extract condition_id from MarketCreated events
- * 4. Wipe engine DB + Redis
- * 5. Re-seed markets into engine with correct condition_id
- * 6. Engine sets up on-chain liquidity (split_position + deposit) automatically
- */
+/** Re-seed on-chain markets, wipe the engine, and seed the fresh markets back in. */
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "../../services/engine/.env") });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
 import { RpcProvider, Account, Contract } from "starknet";
-import fs from "fs";
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { loadPrivateKey, loadAdminAddress } from "../lib/keystore.mjs";
 
 const RPC_URL = "https://api.zan.top/public/starknet-sepolia/rpc/v0_8";
+const ENGINE_URL = "http://localhost:3001";
+const SHORT_DELAY_MS = 3_000;
+const MARKET_CREATION_DELAY_MS = 25_000;
+const ENGINE_SEED_DELAY_MS = 20_000;
+const FACTORY_LOOKBACK_LIMIT = 20;
+const QUESTION_SUFFIX = `-v${Date.now()}`;
+
 const PRIVATE_KEY = loadPrivateKey();
 const ADMIN_ADDRESS = loadAdminAddress();
-const ENGINE_URL = "http://localhost:3001";
 
-// Read addresses from single source of truth
-const _addrs = JSON.parse(fs.readFileSync("packages/shared/src/addresses/sepolia.json", "utf-8"));
-const OLD_USDC = _addrs.USDC;
-const NEW_USDC = _addrs.USDC;
-const MARKET_FACTORY = _addrs.MarketFactory;
-const RESOLVER = _addrs.AdminResolver;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const addresses = JSON.parse(
+  readFileSync("packages/shared/src/addresses/sepolia.json", "utf-8"),
+);
+const BOND_TOKEN = addresses.USDC;
+const COLLATERAL_TOKEN = addresses.USDC;
+const MARKET_FACTORY = addresses.MarketFactory;
+const RESOLVER = addresses.AdminResolver;
 
 const provider = new RpcProvider({ nodeUrl: RPC_URL });
-const account = new Account(provider, ADMIN_ADDRESS, PRIVATE_KEY);
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const account = new Account({ provider, address: ADMIN_ADDRESS, signer: PRIVATE_KEY });
 
-const factoryAbi = JSON.parse(fs.readFileSync("packages/shared/src/abis/MarketFactory.json", "utf-8"));
-const factory = new Contract(factoryAbi, MARKET_FACTORY, account);
-const erc20Abi = JSON.parse(fs.readFileSync("packages/shared/src/abis/MockERC20.json", "utf-8"));
+const factoryAbi = JSON.parse(
+  readFileSync("packages/shared/src/abis/MarketFactory.json", "utf-8"),
+);
+const factory = new Contract({ abi: factoryAbi, address: MARKET_FACTORY, providerOrAccount: account });
+const factoryReader = new Contract({ abi: factoryAbi, address: MARKET_FACTORY, providerOrAccount: provider });
+const erc20Abi = JSON.parse(
+  readFileSync("packages/shared/src/abis/MockERC20.json", "utf-8"),
+);
+const bondToken = new Contract({ abi: erc20Abi, address: BOND_TOKEN, providerOrAccount: account });
 
-// Use unique questions to avoid "CT: condition already exists" errors.
-// Append a timestamp-based suffix to ensure unique condition_ids.
-const SUFFIX = `-v${Date.now()}`;
-const markets = [
+const seedMarkets = [
   {
     engineId: "eth-5k-mar2026",
-    question: `Will ETH exceed $5,000 before end of March 2026${SUFFIX}?`,
+    question: `Will ETH exceed $5,000 before end of March 2026${QUESTION_SUFFIX}?`,
     outcomeLabels: ["Yes", "No"],
     category: "crypto",
     resolutionHours: 72,
   },
   {
     engineId: "btc-150k-q1",
-    question: `Will BTC surpass $150K in Q1 2026${SUFFIX}?`,
+    question: `Will BTC surpass $150K in Q1 2026${QUESTION_SUFFIX}?`,
     outcomeLabels: ["Yes", "No"],
     category: "crypto",
     resolutionHours: 120,
   },
   {
     engineId: "fed-rate-cut",
-    question: `Will the Fed announce a rate cut in March 2026${SUFFIX}?`,
+    question: `Will the Fed announce a rate cut in March 2026${QUESTION_SUFFIX}?`,
     outcomeLabels: ["Yes", "No"],
     category: "economics",
     resolutionHours: 168,
@@ -68,60 +77,60 @@ function strToFelt(s) {
   return hex;
 }
 
-async function mintOldUsdcForBonds() {
+async function mintBondTokenForBonds() {
   console.log("Step 1: Minting OLD USDC for bond payments...");
-  const oldUsdc = new Contract(erc20Abi, OLD_USDC, account);
+  const balance = await bondToken.call("balance_of", [ADMIN_ADDRESS]);
+  const balanceAmount = BigInt(balance);
+  console.log(`  Current OLD USDC balance: ${balanceAmount.toString()}`);
 
-  // Check current balance
-  const bal = await oldUsdc.call("balance_of", [ADMIN_ADDRESS]);
-  const balNum = BigInt(bal);
-  console.log(`  Current OLD USDC balance: ${balNum.toString()}`);
-
-  // Need 20 * 1e18 per market (OLD USDC has 18 decimals)
-  // 3 markets * 20 = 60 OLD USDC
   const needed = 60n * 10n ** 18n;
-  if (balNum >= needed) {
+  if (balanceAmount >= needed) {
     console.log(`  Already have enough OLD USDC, skipping mint.`);
     return;
   }
 
-  const mintAmount = needed - balNum + 10n * 10n ** 18n; // mint extra buffer
+  const mintAmount = needed - balanceAmount + 10n * 10n ** 18n;
   console.log(`  Minting ${mintAmount.toString()} OLD USDC...`);
 
   const tx = await account.execute([
-    oldUsdc.populate("mint", [ADMIN_ADDRESS, { low: mintAmount.toString(), high: "0" }]),
+    bondToken.populate("mint", [
+      ADMIN_ADDRESS,
+      { low: mintAmount.toString(), high: "0" },
+    ]),
   ]);
   await provider.waitForTransaction(tx.transaction_hash);
   console.log(`  Minted! tx: ${tx.transaction_hash}\n`);
 }
 
-async function approveOldUsdcForFactory() {
+async function approveBondTokenForFactory() {
   console.log("Step 2: Approving OLD USDC for factory bond...");
-  const oldUsdc = new Contract(erc20Abi, OLD_USDC, account);
-
-  const approveAmount = 100n * 10n ** 18n; // 100 OLD USDC (18 decimals)
+  const approveAmount = 100n * 10n ** 18n;
   const tx = await account.execute([
-    oldUsdc.populate("approve", [MARKET_FACTORY, { low: approveAmount.toString(), high: "0" }]),
+    bondToken.populate("approve", [
+      MARKET_FACTORY,
+      { low: approveAmount.toString(), high: "0" },
+    ]),
   ]);
   await provider.waitForTransaction(tx.transaction_hash);
   console.log(`  Approved! tx: ${tx.transaction_hash}\n`);
 }
 
-async function createOnChainMarket(m) {
-  console.log(`  Creating on-chain: "${m.question}"`);
+async function createOnChainMarket(market) {
+  console.log(`  Creating on-chain: "${market.question}"`);
 
-  const resTime = Math.floor(Date.now() / 1000) + m.resolutionHours * 3600;
-  const outcomesFelts = m.outcomeLabels.map(strToFelt);
-  const categoryFelt = strToFelt(m.category);
+  const resTime = Math.floor(Date.now() / 1000) + market.resolutionHours * 3600;
+  const outcomesFelts = market.outcomeLabels.map(strToFelt);
+  const categoryFelt = strToFelt(market.category);
 
   const createTx = await account.execute([
     factory.populate("create_market", [
-      m.question,
+      market.question,
       outcomesFelts,
       categoryFelt,
-      NEW_USDC,   // Correct collateral: NEW USDC (6 decimals)
+      COLLATERAL_TOKEN,
       resTime,
       RESOLVER,
+      0, // market_type: 0 = binary
     ]),
   ]);
   console.log(`    Tx: ${createTx.transaction_hash}`);
@@ -133,84 +142,118 @@ async function createOnChainMarket(m) {
     return null;
   }
 
-  // Extract market_id and condition_id from MarketCreated event.
-  // Event structure:
-  //   keys[0] = event selector
-  //   keys[1] = market_id (u64, indexed)
-  //   keys[2] = creator (ContractAddress, indexed)
-  //   data[0] = condition_id (felt252)
-  //   data[1+] = question (ByteArray), category, resolution_time
   let onChainMarketId = null;
   let conditionId = null;
 
-  if (receipt.events) {
-    for (const evt of receipt.events) {
-      // MarketCreated has at least 3 keys and data with condition_id
-      if (evt.keys.length >= 3 && evt.data && evt.data.length > 0) {
-        const possibleId = parseInt(evt.keys[1], 16);
-        if (possibleId > 0 && possibleId < 10000) {
-          onChainMarketId = possibleId.toString();
-          conditionId = evt.data[0]; // condition_id is first data field
-          break;
-        }
-      }
+  for (const event of receipt.events ?? []) {
+    if (event.keys.length < 3 || !event.data?.length) {
+      continue;
     }
+
+    const possibleId = Number.parseInt(event.keys[1], 16);
+    if (!Number.isFinite(possibleId) || possibleId <= 0 || possibleId >= 10_000) {
+      continue;
+    }
+
+    onChainMarketId = possibleId.toString();
+    conditionId = event.data[0];
+    break;
   }
 
   if (!onChainMarketId || !conditionId) {
     console.error(`    Could not extract market_id or condition_id from events!`);
-    // Fallback: read from factory contract
     console.log(`    Attempting to read from factory...`);
-    const factoryRead = new Contract(factoryAbi, MARKET_FACTORY, provider);
-    // Try to find the latest market
-    for (let id = 20; id >= 1; id--) {
+
+    for (let marketId = FACTORY_LOOKBACK_LIMIT; marketId >= 1; marketId -= 1) {
       try {
-        const mkt = await factoryRead.call("get_market", [id]);
-        const collat = "0x" + BigInt(mkt.collateral_token).toString(16);
-        if (collat === NEW_USDC) {
-          onChainMarketId = Number(mkt.market_id).toString();
-          conditionId = "0x" + BigInt(mkt.condition_id).toString(16);
-          console.log(`    Found: market_id=${onChainMarketId}, condition_id=${conditionId}`);
-          break;
+        const latestMarket = await factoryReader.call("get_market", [marketId]);
+        const collateralToken = `0x${BigInt(latestMarket.collateral_token).toString(16)}`;
+        if (collateralToken !== COLLATERAL_TOKEN) {
+          continue;
         }
-      } catch { continue; }
+
+        onChainMarketId = Number(latestMarket.market_id).toString();
+        conditionId = `0x${BigInt(latestMarket.condition_id).toString(16)}`;
+        console.log(
+          `    Found: market_id=${onChainMarketId}, condition_id=${conditionId}`,
+        );
+        break;
+      } catch {}
     }
   }
 
-  console.log(`    Market ID: ${onChainMarketId}, Condition ID: ${conditionId}`);
+  console.log(
+    `    Market ID: ${onChainMarketId ?? null}, Condition ID: ${conditionId ?? null}`,
+  );
 
   return {
     onChainMarketId,
     conditionId,
     resolutionTime: resTime,
-    outcomeCount: m.outcomeLabels.length,
-    collateralToken: NEW_USDC,
+    outcomeCount: market.outcomeLabels.length,
+    collateralToken: COLLATERAL_TOKEN,
   };
 }
 
+function findContainer(nameHint, portFallback) {
+  // Try exact name first
+  try {
+    const out = execSync(`docker ps --format '{{.Names}}' --filter name=${nameHint}`, { encoding: "utf-8" }).trim();
+    if (out) return out.split("\n")[0];
+  } catch {}
+  // Fallback: find by published port
+  if (portFallback) {
+    try {
+      const out = execSync(`docker ps --filter publish=${portFallback} --format '{{.Names}}'`, { encoding: "utf-8" }).trim();
+      if (out) return out.split("\n")[0];
+    } catch {}
+  }
+  return nameHint; // last resort — use the hint as-is
+}
+
+const PG_CONTAINER = findContainer("market-zap-postgres", 5432);
+const REDIS_CONTAINER = findContainer("market-zap-redis", 6379);
+
+console.log(`Using Postgres container: ${PG_CONTAINER}`);
+console.log(`Using Redis container: ${REDIS_CONTAINER}\n`);
+
+const ENGINE_CLEANUP_STEPS = [
+  {
+    command:
+      `docker exec ${PG_CONTAINER} psql -U postgres -d market_zap -c "TRUNCATE trades CASCADE;"`,
+    successMessage: "Truncated trades table",
+    warningMessage: "trades table issue, skipping...",
+  },
+  {
+    command:
+      `docker exec ${PG_CONTAINER} psql -U postgres -d market_zap -c "DELETE FROM markets;"`,
+    successMessage: "Deleted all markets",
+    warningMessage: "markets table issue, skipping...",
+  },
+  {
+    command: `docker exec ${REDIS_CONTAINER} redis-cli FLUSHALL`,
+    successMessage: "Flushed Redis completely",
+    warningMessage: "Redis flush issue, skipping...",
+  },
+  {
+    command:
+      `docker exec ${PG_CONTAINER} psql -U postgres -d market_zap -c "REFRESH MATERIALIZED VIEW CONCURRENTLY leaderboard_mv;"`,
+    successMessage: "Refreshed leaderboard materialized view",
+    warningMessage: "Leaderboard view refresh skipped",
+  },
+];
+
 async function wipeEngineData() {
   console.log("\nStep 4: Wiping Engine Data...");
-  const { execSync } = await import("child_process");
 
-  try {
-    execSync(`docker exec market-zap-postgres psql -U postgres -d market_zap -c "TRUNCATE trades CASCADE;"`, { stdio: "pipe" });
-    console.log("  Truncated trades table");
-  } catch { console.warn("  trades table issue, skipping..."); }
-
-  try {
-    execSync(`docker exec market-zap-postgres psql -U postgres -d market_zap -c "DELETE FROM markets;"`, { stdio: "pipe" });
-    console.log("  Deleted all markets");
-  } catch { console.warn("  markets table issue, skipping..."); }
-
-  try {
-    execSync(`docker exec market-zap-redis redis-cli FLUSHALL`, { stdio: "pipe" });
-    console.log("  Flushed Redis completely");
-  } catch { console.warn("  Redis flush issue, skipping..."); }
-
-  try {
-    execSync(`docker exec market-zap-postgres psql -U postgres -d market_zap -c "REFRESH MATERIALIZED VIEW CONCURRENTLY leaderboard_mv;"`, { stdio: "pipe" });
-    console.log("  Refreshed leaderboard materialized view");
-  } catch { console.warn("  Leaderboard view refresh skipped"); }
+  for (const step of ENGINE_CLEANUP_STEPS) {
+    try {
+      execSync(step.command, { stdio: "pipe" });
+      console.log(`  ${step.successMessage}`);
+    } catch {
+      console.warn(`  ${step.warningMessage}`);
+    }
+  }
 
   console.log("  Done!\n");
 }
@@ -246,45 +289,33 @@ async function seedMarketToEngine(engineMarket, onChainData) {
     return false;
   }
 
-  const seedTxHash = result.data?.seedTxHash;
-  if (seedTxHash) {
-    console.log(`    On-chain liquidity tx: ${seedTxHash}`);
-  } else {
-    console.warn(`    WARNING: No on-chain liquidity setup (seedTxHash is null)`);
-    console.warn(`    This means settlement will fail until liquidity is set up.`);
-  }
-  console.log(`    Seeded successfully!`);
+  console.log(`    Seeded successfully! AMM pool initialized.`);
   return true;
 }
 
 async function main() {
   console.log("=== MarketZap Full Re-Seed ===\n");
 
-  // Step 1: Mint OLD USDC for bond payments
-  await mintOldUsdcForBonds();
-  await sleep(3000);
+  await mintBondTokenForBonds();
+  await sleep(SHORT_DELAY_MS);
 
-  // Step 2: Approve OLD USDC for factory
-  await approveOldUsdcForFactory();
-  await sleep(3000);
+  await approveBondTokenForFactory();
+  await sleep(SHORT_DELAY_MS);
 
-  // Step 3: Create on-chain markets with NEW USDC collateral
   console.log("Step 3: Creating on-chain markets with NEW USDC collateral...\n");
   const onChainData = [];
-  for (const m of markets) {
-    const data = await createOnChainMarket(m);
+  for (const market of seedMarkets) {
+    const data = await createOnChainMarket(market);
     if (!data) {
-      console.error(`  Failed to create ${m.engineId}!`);
+      console.error(`  Failed to create ${market.engineId}!`);
       process.exit(1);
     }
-    onChainData.push({ engine: m, onChain: data });
-    await sleep(25000); // Wait between on-chain txs (avoid RPC rate limits)
+    onChainData.push({ engine: market, onChain: data });
+    await sleep(MARKET_CREATION_DELAY_MS);
   }
 
-  // Step 4: Wipe engine data
   await wipeEngineData();
 
-  // Step 5: Check engine health
   try {
     const health = await fetch(`${ENGINE_URL}/api/health`);
     const h = await health.json();
@@ -294,18 +325,15 @@ async function main() {
     process.exit(1);
   }
 
-  // Step 6: Seed each market into the engine
   console.log("Step 5: Seeding markets into engine...\n");
   for (const { engine, onChain } of onChainData) {
     const success = await seedMarketToEngine(engine, onChain);
     if (!success) {
       console.error(`  Failed to seed ${engine.engineId}, continuing...`);
     }
-    // Wait for on-chain liquidity setup (15s for multicall + confirmation)
-    await sleep(20000);
+    await sleep(ENGINE_SEED_DELAY_MS);
   }
 
-  // Step 7: Verify
   console.log("\n=== Verification ===\n");
   try {
     const resp = await fetch(`${ENGINE_URL}/api/markets`);
@@ -324,24 +352,21 @@ async function main() {
     console.error("Verification failed:", err.message);
   }
 
-  // Check DB directly
   console.log("\nDB verification:");
-  const { execSync } = await import("child_process");
   try {
     const dbOutput = execSync(
-      `docker exec market-zap-postgres psql -U postgres -d market_zap -c "SELECT market_id, on_chain_market_id, condition_id, collateral_token, status FROM markets;"`,
+      `docker exec ${PG_CONTAINER} psql -U postgres -d market_zap -c "SELECT market_id, on_chain_market_id, condition_id, collateral_token, status FROM markets;"`,
       { encoding: "utf-8" }
     );
     console.log(dbOutput);
   } catch {}
 
-  // Check Redis AMM state
   console.log("Redis AMM state:");
   try {
-    const keys = execSync(`docker exec market-zap-redis redis-cli KEYS "amm:*"`, { encoding: "utf-8" });
+    const keys = execSync(`docker exec ${REDIS_CONTAINER} redis-cli KEYS "amm:*"`, { encoding: "utf-8" });
     console.log(keys);
     for (const key of keys.trim().split("\n").filter(Boolean)) {
-      const val = execSync(`docker exec market-zap-redis redis-cli GET "${key}"`, { encoding: "utf-8" });
+      const val = execSync(`docker exec ${REDIS_CONTAINER} redis-cli GET "${key}"`, { encoding: "utf-8" });
       console.log(`  ${key}: ${val.trim()}`);
     }
   } catch {}
@@ -349,4 +374,7 @@ async function main() {
   console.log("\n=== Done! ===");
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

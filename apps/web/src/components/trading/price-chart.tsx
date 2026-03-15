@@ -11,6 +11,7 @@ import {
   createChart,
   ColorType,
   LineStyle,
+  LineType,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
@@ -32,21 +33,31 @@ interface PriceChartProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-type Interval = "1h" | "6h" | "1d";
+type Interval = "5m" | "15m" | "1h" | "6h" | "1d";
 
 const RANGE_CONFIG: Record<
   string,
   { interval: Interval; limit: number; bucketSec: number }
 > = {
-  "1h": { interval: "1h", limit: 1, bucketSec: 3600 },
+  "1h": { interval: "5m", limit: 12, bucketSec: 300 },
+  "6h": { interval: "15m", limit: 24, bucketSec: 900 },
   "24h": { interval: "1h", limit: 24, bucketSec: 3600 },
-  "7d": { interval: "6h", limit: 28, bucketSec: 21600 },
-  all: { interval: "1d", limit: 365, bucketSec: 86400 },
+  "7d": { interval: "1h", limit: 168, bucketSec: 3600 },
+  all: { interval: "6h", limit: 730, bucketSec: 21600 },
 };
 
-const COLORS = {
-  yes: "#4AE8A0",
-  no: "#E85D4A",
+const OUTCOME_COLORS = [
+  { line: "#4AE8A0", areaTop: "rgba(74, 232, 160, 0.15)", areaBottom: "rgba(74, 232, 160, 0.0)" },
+  { line: "#E85D4A", areaTop: "rgba(232, 93, 74, 0.15)", areaBottom: "rgba(232, 93, 74, 0.0)" },
+  { line: "#F5A623", areaTop: "rgba(245, 166, 35, 0.15)", areaBottom: "rgba(245, 166, 35, 0.0)" },
+  { line: "#4A90D9", areaTop: "rgba(74, 144, 217, 0.15)", areaBottom: "rgba(74, 144, 217, 0.0)" },
+  { line: "#9B59B6", areaTop: "rgba(155, 89, 182, 0.15)", areaBottom: "rgba(155, 89, 182, 0.0)" },
+  { line: "#E84A8A", areaTop: "rgba(232, 74, 138, 0.15)", areaBottom: "rgba(232, 74, 138, 0.0)" },
+  { line: "#2DD4BF", areaTop: "rgba(45, 212, 191, 0.15)", areaBottom: "rgba(45, 212, 191, 0.0)" },
+  { line: "#F97316", areaTop: "rgba(249, 115, 22, 0.15)", areaBottom: "rgba(249, 115, 22, 0.0)" },
+];
+
+const CHART_COLORS = {
   grid: "rgba(245, 240, 235, 0.03)",
   text: "rgba(245, 240, 235, 0.4)",
   crosshair: "rgba(245, 240, 235, 0.15)",
@@ -54,8 +65,8 @@ const COLORS = {
 
 interface ChartData {
   timestamps: number[];
-  yesPrices: (number | null)[];
-  noPrices: (number | null)[];
+  /** outcomePrices[outcomeIndex][pointIndex] — values in 0-100 range */
+  outcomePrices: (number | null)[][];
   volumes: (number | null)[];
 }
 
@@ -72,10 +83,9 @@ export function PriceChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const yesSeriesRef = useRef<ISeriesApi<"Area"> | null>(null);
-  const noSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const outcomeSeriesRefs = useRef<(ISeriesApi<"Area"> | ISeriesApi<"Line">)[]>([]);
   const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const [range, setRange] = useState("24h");
+  const [range, setRange] = useState("all");
   const [loading, setLoading] = useState(true);
   const [errored, setErrored] = useState(false);
   const [chartData, setChartData] = useState<ChartData | null>(null);
@@ -90,8 +100,6 @@ export function PriceChart({
   const wsConnected = useAppStore((s) => s.wsConnected);
   const subscribeChannels = useAppStore((s) => s.subscribeChannels);
   const unsubscribeChannels = useAppStore((s) => s.unsubscribeChannels);
-
-  const hasMultipleOutcomes = outcomes.length >= 2;
 
   // -------------------------------------------------------------------------
   // WS: subscribe to trades channel for real-time updates
@@ -128,37 +136,43 @@ export function PriceChart({
         ? Math.floor(new Date(latest.timestamp).getTime() / 1000)
         : Math.floor(Date.now() / 1000);
 
-      const rawPrice = parseFloat(latest.price);
-      const yesPct =
-        latest.outcomeIndex === 1
-          ? (1 - rawPrice) * 100
-          : rawPrice * 100;
-      const noPct = 100 - yesPct;
-
+      const tradePrice = parseFloat(latest.price);
+      const tradeOutcome = latest.outcomeIndex;
       const tradeAmount = parseFloat(latest.amount || "0");
 
       const { bucketSec, limit } =
         RANGE_CONFIG[rangeRef.current] ?? RANGE_CONFIG["24h"];
 
       setChartData((prev) => {
-        if (!prev || prev.timestamps.length === 0) return prev;
+        if (!prev || prev.timestamps.length === 0 || prev.outcomePrices.length === 0) return prev;
+
+        const numOutcomes = prev.outcomePrices.length;
         const lastTs = prev.timestamps[prev.timestamps.length - 1] ?? 0;
+
+        // Build new prices: update traded outcome, derive others
+        const newPrices = prev.outcomePrices.map((arr, oi) => {
+          const lastVal = arr[arr.length - 1] ?? 50;
+          if (oi === tradeOutcome) return tradePrice * 100;
+          if (numOutcomes === 2) return (1 - tradePrice) * 100;
+          return lastVal; // multi-outcome: carry forward
+        });
 
         let next: ChartData;
         if (tradeTime - lastTs < bucketSec) {
-          const ts = [...prev.timestamps];
-          const yes = [...prev.yesPrices];
-          const no = [...prev.noPrices];
+          // Update last bucket
+          const op = prev.outcomePrices.map((arr, oi) => {
+            const updated = [...arr];
+            updated[updated.length - 1] = newPrices[oi];
+            return updated;
+          });
           const vol = [...prev.volumes];
-          yes[yes.length - 1] = yesPct;
-          no[no.length - 1] = noPct;
           vol[vol.length - 1] = (vol[vol.length - 1] ?? 0) + tradeAmount;
-          next = { timestamps: ts, yesPrices: yes, noPrices: no, volumes: vol };
+          next = { timestamps: [...prev.timestamps], outcomePrices: op, volumes: vol };
         } else {
+          // New bucket
           next = {
             timestamps: [...prev.timestamps, tradeTime],
-            yesPrices: [...prev.yesPrices, yesPct],
-            noPrices: [...prev.noPrices, noPct],
+            outcomePrices: prev.outcomePrices.map((arr, oi) => [...arr, newPrices[oi]]),
             volumes: [...prev.volumes, tradeAmount],
           };
         }
@@ -166,8 +180,7 @@ export function PriceChart({
         if (next.timestamps.length > limit) {
           const excess = next.timestamps.length - limit;
           next.timestamps = next.timestamps.slice(excess);
-          next.yesPrices = next.yesPrices.slice(excess);
-          next.noPrices = next.noPrices.slice(excess);
+          next.outcomePrices = next.outcomePrices.map((arr) => arr.slice(excess));
           next.volumes = next.volumes.slice(excess);
         }
 
@@ -188,31 +201,43 @@ export function PriceChart({
         const history: PricePoint[] = result.priceHistory ?? [];
 
         if (history.length > 0) {
+          const outcomeCount = Math.max(2, history[0]?.prices?.length ?? 2);
+
           const points = history
             .map((p) => ({
               time:
                 typeof p.timestamp === "number"
                   ? p.timestamp
                   : Math.floor(new Date(String(p.timestamp)).getTime() / 1000),
-              yesPrice: parseFloat(p.prices[0] ?? "0.5"),
+              prices: Array.from({ length: outcomeCount }, (_, oi) => {
+                const raw = parseFloat(p.prices[oi] ?? "0.5");
+                return isNaN(raw) || raw < 0 || raw > 1 ? null : raw;
+              }),
               volume: parseFloat(p.volume ?? "0") / 1e6,
             }))
-            .filter((d) => !isNaN(d.yesPrice) && d.yesPrice >= 0 && d.yesPrice <= 1)
+            .filter((d) => d.prices[0] !== null)
             .sort((a, b) => a.time - b.time)
             .slice(-limit);
 
           if (points.length > 0) {
             const now = Math.floor(Date.now() / 1000);
             const last = points[points.length - 1];
-            const cp = currentPricesRef.current?.[0] ?? last.yesPrice;
+            const cp = currentPricesRef.current;
             if (now > last.time) {
-              points.push({ time: now, yesPrice: cp, volume: 0 });
+              points.push({
+                time: now,
+                prices: Array.from({ length: outcomeCount }, (_, oi) =>
+                  cp?.[oi] ?? last.prices[oi],
+                ),
+                volume: 0,
+              });
             }
 
             return {
               timestamps: points.map((p) => p.time),
-              yesPrices: points.map((p) => p.yesPrice * 100),
-              noPrices: points.map((p) => (1 - p.yesPrice) * 100),
+              outcomePrices: Array.from({ length: outcomeCount }, (_, oi) =>
+                points.map((p) => (p.prices[oi] != null ? p.prices[oi]! * 100 : null)),
+              ),
               volumes: points.map((p) => p.volume),
             };
           }
@@ -221,6 +246,21 @@ export function PriceChart({
         console.error("[PriceChart] failed to fetch price history:", err);
         throw err;
       }
+
+      // Fallback: no historical data — show flat line at current prices
+      const cp = currentPricesRef.current;
+      if (cp && cp.length > 0) {
+        const now = Math.floor(Date.now() / 1000);
+        const rangeSeconds = limit * ({ "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "1d": 86400 }[interval] ?? 3600);
+        const start = now - rangeSeconds;
+        const oc = cp.length;
+        return {
+          timestamps: [start, now],
+          outcomePrices: Array.from({ length: oc }, (_, oi) => [cp[oi] * 100, cp[oi] * 100]),
+          volumes: [0, 0],
+        };
+      }
+
       return null;
     },
     [marketId],
@@ -251,14 +291,16 @@ export function PriceChart({
   }, [marketId, range, buildData]);
 
   // -------------------------------------------------------------------------
-  // Price change delta
+  // Price change delta (based on first outcome)
   // -------------------------------------------------------------------------
   const priceChange = useMemo(() => {
-    if (!chartData || chartData.yesPrices.length < 2) return null;
-    const first = chartData.yesPrices[0];
-    const last = chartData.yesPrices[chartData.yesPrices.length - 1];
-    if (first == null || last == null) return null;
-    const delta = last - first;
+    if (!chartData || chartData.outcomePrices.length === 0) return null;
+    const first = chartData.outcomePrices[0];
+    if (first.length < 2) return null;
+    const start = first[0];
+    const end = first[first.length - 1];
+    if (start == null || end == null) return null;
+    const delta = end - start;
     return {
       delta,
       sign: delta > 0 ? "+" : "",
@@ -278,56 +320,37 @@ export function PriceChart({
     const container = containerRef.current;
     if (!container || !chartData || chartData.timestamps.length === 0) return;
 
-    // Convert to series data formats
-    const yesAreaData: LineData[] = [];
-    const noLineData: LineData[] = [];
-    const volData: HistogramData[] = [];
-    for (let i = 0; i < chartData.timestamps.length; i++) {
-      const t = chartData.timestamps[i] as Time;
-      const yv = chartData.yesPrices[i];
-      const nv = chartData.noPrices[i];
-      const vol = chartData.volumes[i];
-      if (yv != null) yesAreaData.push({ time: t, value: yv });
-      if (nv != null) noLineData.push({ time: t, value: nv });
-      if (vol != null) {
-        volData.push({
-          time: t,
-          value: vol,
-          color: (yv ?? 50) >= 50 ? "rgba(74, 232, 160, 0.3)" : "rgba(232, 93, 74, 0.3)",
-        });
-      }
-    }
+    const numOutcomes = chartData.outcomePrices.length;
 
     // Always recreate chart — destroy previous if any
     if (chartRef.current) {
       try { chartRef.current.remove(); } catch { /* already disposed */ }
       chartRef.current = null;
-      yesSeriesRef.current = null;
-      noSeriesRef.current = null;
+      outcomeSeriesRefs.current = [];
       volSeriesRef.current = null;
     }
 
     const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: COLORS.text,
+        textColor: CHART_COLORS.text,
         fontSize: 10,
         fontFamily: "'JetBrains Mono', monospace",
       },
       grid: {
-        vertLines: { color: COLORS.grid },
-        horzLines: { color: COLORS.grid },
+        vertLines: { color: CHART_COLORS.grid },
+        horzLines: { color: CHART_COLORS.grid },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
-          color: COLORS.crosshair,
+          color: CHART_COLORS.crosshair,
           width: 1,
           style: LineStyle.Dashed,
           labelBackgroundColor: "#1a1816",
         },
         horzLine: {
-          color: COLORS.crosshair,
+          color: CHART_COLORS.crosshair,
           width: 1,
           style: LineStyle.Dashed,
           labelBackgroundColor: "#1a1816",
@@ -345,41 +368,83 @@ export function PriceChart({
       height: container.clientHeight,
     });
 
-    // YES area (gradient fill)
-    const yesSeries = chart.addAreaSeries({
-      topColor: "rgba(74, 232, 160, 0.2)",
-      bottomColor: "rgba(74, 232, 160, 0.0)",
-      lineColor: COLORS.yes,
-      lineWidth: 2,
-      priceFormat: {
-        type: "custom",
-        formatter: (p: number) => p.toFixed(1) + "%",
-      },
-      lastValueVisible: true,
-      priceLineVisible: true,
-      priceLineStyle: LineStyle.Dashed,
-      priceLineColor: COLORS.yes,
-    });
-    yesSeries.setData(yesAreaData);
-    yesSeriesRef.current = yesSeries;
+    // Create a series per outcome
+    // Binary markets: first outcome gets area fill, second gets line
+    // Multi-outcome (3+): all line series, added in reverse order so outcome 0
+    // renders on top (last added = highest z-order in lightweight-charts)
+    const useBinaryLayout = numOutcomes === 2;
+    const seriesArr = new Array<ISeriesApi<"Area"> | ISeriesApi<"Line">>(numOutcomes);
 
-    // NO line
-    if (hasMultipleOutcomes) {
-      const noSeries = chart.addLineSeries({
-        color: COLORS.no,
-        lineWidth: 2,
-        priceFormat: {
-          type: "custom",
-          formatter: (p: number) => p.toFixed(1) + "%",
-        },
-        lastValueVisible: true,
-        priceLineVisible: false,
-      });
-      noSeries.setData(noLineData);
-      noSeriesRef.current = noSeries;
+    // For multi-outcome, add in reverse so outcome 0 draws last (on top).
+    // For binary, keep natural order (area first, line on top).
+    const addOrder = useBinaryLayout
+      ? Array.from({ length: numOutcomes }, (_, i) => i)
+      : Array.from({ length: numOutcomes }, (_, i) => numOutcomes - 1 - i);
+
+    for (const oi of addOrder) {
+      const color = OUTCOME_COLORS[oi] ?? OUTCOME_COLORS[0];
+
+      // Build data for this outcome
+      const lineData: LineData[] = [];
+      for (let i = 0; i < chartData.timestamps.length; i++) {
+        const v = chartData.outcomePrices[oi]?.[i];
+        if (v != null) lineData.push({ time: chartData.timestamps[i] as Time, value: v });
+      }
+
+      if (useBinaryLayout && oi === 0) {
+        // Binary: first outcome gets area series with gradient fill
+        const series = chart.addAreaSeries({
+          topColor: color.areaTop,
+          bottomColor: color.areaBottom,
+          lineColor: color.line,
+          lineWidth: 2,
+          lineType: LineType.Curved,
+          priceFormat: {
+            type: "custom",
+            formatter: (p: number) => p.toFixed(1) + "%",
+          },
+          lastValueVisible: true,
+          priceLineVisible: true,
+          priceLineStyle: LineStyle.Dashed,
+          priceLineColor: color.line,
+        });
+        series.setData(lineData);
+        seriesArr[oi] = series;
+      } else {
+        // Multi-outcome or binary non-first: line series
+        const series = chart.addLineSeries({
+          color: color.line,
+          lineWidth: 2,
+          lineType: LineType.Curved,
+          priceFormat: {
+            type: "custom",
+            formatter: (p: number) => p.toFixed(1) + "%",
+          },
+          lastValueVisible: true,
+          priceLineVisible: false,
+        });
+        series.setData(lineData);
+        seriesArr[oi] = series;
+      }
     }
 
+    outcomeSeriesRefs.current = seriesArr;
+
     // Volume histogram (separate price scale)
+    const volData: HistogramData[] = [];
+    for (let i = 0; i < chartData.timestamps.length; i++) {
+      const t = chartData.timestamps[i] as Time;
+      const vol = chartData.volumes[i];
+      const firstPrice = chartData.outcomePrices[0]?.[i] ?? 50;
+      if (vol != null) {
+        volData.push({
+          time: t,
+          value: vol,
+          color: firstPrice >= 50 ? "rgba(74, 232, 160, 0.3)" : "rgba(232, 93, 74, 0.3)",
+        });
+      }
+    }
+
     const volSeries = chart.addHistogramSeries({
       priceFormat: {
         type: "custom",
@@ -413,17 +478,6 @@ export function PriceChart({
           return;
         }
 
-        const yesVal = param.seriesData.get(yesSeries) as LineData | undefined;
-        const noVal = noSeriesRef.current
-          ? (param.seriesData.get(noSeriesRef.current) as LineData | undefined)
-          : undefined;
-        const volVal = param.seriesData.get(volSeries) as HistogramData | undefined;
-
-        if (!yesVal) {
-          tooltip.style.opacity = "0";
-          return;
-        }
-
         const ts = typeof param.time === "number" ? param.time : 0;
         const d = new Date(ts * 1000);
         const timeStr = d.toLocaleString("en-US", {
@@ -434,12 +488,26 @@ export function PriceChart({
         });
 
         let html = `<div style="font-weight:600;margin-bottom:3px;color:rgba(245,240,235,0.6)">${timeStr}</div>`;
-        html += `<div style="color:${COLORS.yes}">Yes: ${yesVal.value.toFixed(1)}%</div>`;
-        if (noVal) {
-          html += `<div style="color:${COLORS.no}">No: ${noVal.value.toFixed(1)}%</div>`;
+        let hasValue = false;
+
+        for (let oi = 0; oi < seriesArr.length; oi++) {
+          const val = param.seriesData.get(seriesArr[oi]) as LineData | undefined;
+          if (val) {
+            hasValue = true;
+            const c = OUTCOME_COLORS[oi] ?? OUTCOME_COLORS[0];
+            const label = outcomes[oi] ?? `Outcome ${oi + 1}`;
+            html += `<div style="color:${c.line}">${label}: ${val.value.toFixed(1)}%</div>`;
+          }
         }
+
+        const volVal = param.seriesData.get(volSeries) as HistogramData | undefined;
         if (volVal && volVal.value > 0) {
           html += `<div style="color:rgba(245,240,235,0.4)">Vol: $${volVal.value.toFixed(2)}</div>`;
+        }
+
+        if (!hasValue) {
+          tooltip.style.opacity = "0";
+          return;
         }
 
         tooltip.innerHTML = html;
@@ -474,11 +542,10 @@ export function PriceChart({
       ro.disconnect();
       try { chart.remove(); } catch { /* already disposed */ }
       chartRef.current = null;
-      yesSeriesRef.current = null;
-      noSeriesRef.current = null;
+      outcomeSeriesRefs.current = [];
       volSeriesRef.current = null;
     };
-  }, [chartData, hasMultipleOutcomes, range]);
+  }, [chartData, outcomes, range]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -507,6 +574,9 @@ export function PriceChart({
             <TabsList className="h-7">
               <TabsTrigger value="1h" className="px-2 text-xs">
                 1h
+              </TabsTrigger>
+              <TabsTrigger value="6h" className="px-2 text-xs">
+                6h
               </TabsTrigger>
               <TabsTrigger value="24h" className="px-2 text-xs">
                 24h
@@ -568,17 +638,16 @@ export function PriceChart({
 
         {/* Legend */}
         {chartData && chartData.timestamps.length > 0 && !loading && !errored && (
-          <div className="flex items-center gap-4 px-4 pb-3 pt-1 text-[10px] font-mono">
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-3 rounded" style={{ background: COLORS.yes }} />
-              <span style={{ color: COLORS.yes }}>{outcomes[0] ?? "Yes"}</span>
-            </span>
-            {hasMultipleOutcomes && (
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block h-0.5 w-3 rounded" style={{ background: COLORS.no }} />
-                <span style={{ color: COLORS.no }}>{outcomes[1] ?? "No"}</span>
-              </span>
-            )}
+          <div className="flex items-center gap-4 px-4 pb-3 pt-1 text-[10px] font-mono flex-wrap">
+            {chartData.outcomePrices.map((_, oi) => {
+              const color = OUTCOME_COLORS[oi] ?? OUTCOME_COLORS[0];
+              return (
+                <span key={oi} className="flex items-center gap-1.5">
+                  <span className="inline-block h-0.5 w-3 rounded" style={{ background: color.line }} />
+                  <span style={{ color: color.line }}>{outcomes[oi] ?? `Outcome ${oi + 1}`}</span>
+                </span>
+              );
+            })}
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-2 w-3 rounded-sm" style={{ background: "rgba(245, 240, 235, 0.15)" }} />
               <span className="text-muted-foreground">Vol</span>

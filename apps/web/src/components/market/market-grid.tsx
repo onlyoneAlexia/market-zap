@@ -18,6 +18,7 @@ interface MarketData {
   marketType?: "public" | "private";
   resolved?: boolean;
   voided?: boolean;
+  thumbnailUrl?: string | null;
 }
 
 interface MarketGridProps {
@@ -28,6 +29,14 @@ interface MarketGridProps {
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+const CATEGORY_COLORS: Record<string, string> = {
+  crypto: "from-amber-500/20 to-amber-600/5",
+  politics: "from-blue-500/20 to-blue-600/5",
+  sports: "from-green-500/20 to-green-600/5",
+  culture: "from-purple-500/20 to-purple-600/5",
+  science: "from-cyan-500/20 to-cyan-600/5",
+};
 
 function compactCountdown(endsAt: number): { text: string; urgent: boolean } {
   const diff = endsAt * 1000 - Date.now();
@@ -71,8 +80,6 @@ function MobileMarketRow({ market }: { market: MarketData }) {
   const router = useRouter();
   const hasPrefetched = React.useRef(false);
   const href = `/markets/${market.id}`;
-  const yesPrice = market.prices[0] ?? 0.5;
-  const noPrice = market.prices[1] ?? 0.5;
   const countdown = compactCountdown(market.endsAt);
   const status = getStatus(market);
 
@@ -103,10 +110,23 @@ function MobileMarketRow({ market }: { market: MarketData }) {
           {countdown.text}
         </span>
       </div>
-      <p className="text-xs mb-2 line-clamp-2">{market.question}</p>
+      <div className="flex gap-2.5 mb-2">
+        <div className={`h-10 w-10 rounded shrink-0 overflow-hidden bg-gradient-to-br ${CATEGORY_COLORS[market.category] ?? "from-muted/20 to-muted/5"}`}>
+          {market.thumbnailUrl && (
+            <img src={market.thumbnailUrl} alt="" className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          )}
+        </div>
+        <p className="text-xs line-clamp-2">{market.question}</p>
+      </div>
       <div className="flex items-center gap-4 text-[10px] font-mono">
-        <span className="text-yes font-bold">{(yesPrice * 100).toFixed(1)}%</span>
-        <span className="text-no">{(noPrice * 100).toFixed(1)}%</span>
+        {market.prices.slice(0, 2).map((p, i) => (
+          <span key={i} className={i === 0 ? "text-yes font-bold" : "text-no"}>
+            {(p * 100).toFixed(1)}%
+          </span>
+        ))}
+        {market.outcomes.length > 2 && (
+          <span className="text-muted-foreground">+{market.outcomes.length - 2}</span>
+        )}
         <span className="text-muted-foreground">{market.volume}</span>
         {market.traders !== undefined && (
           <span className="text-muted-foreground">{market.traders} traders</span>
@@ -123,9 +143,9 @@ export function MarketGrid({ markets, isLoading }: MarketGridProps) {
         {/* Header */}
         <div className="hidden md:grid grid-cols-12 gap-0 px-3 py-2 border-b border-border text-[10px] font-mono font-bold text-muted-foreground tracking-wider">
           <div className="col-span-1">Category</div>
-          <div className="col-span-5">Question</div>
-          <div className="col-span-1 text-right">Yes</div>
-          <div className="col-span-1 text-right">No</div>
+          <div className="col-span-1"></div>
+          <div className="col-span-4">Question</div>
+          <div className="col-span-2 text-right">Prices</div>
           <div className="col-span-1 text-right">Volume</div>
           <div className="col-span-1 text-right">Traders</div>
           <div className="col-span-1 text-right">Expiry</div>
@@ -159,7 +179,10 @@ export function MarketGrid({ markets, isLoading }: MarketGridProps) {
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <p className="text-sm font-mono text-muted-foreground">No markets found</p>
           <p className="mt-1 text-[10px] font-mono text-muted-foreground/60">
-            Adjust filters or deploy a new market
+            Adjust your filters or{" "}
+            <Link href="/create" className="text-primary hover:underline">
+              create a new market
+            </Link>
           </p>
         </div>
       </div>
@@ -175,9 +198,9 @@ export function MarketGrid({ markets, isLoading }: MarketGridProps) {
         {/* Header */}
         <div className="grid grid-cols-12 gap-0 px-3 py-2 border-b border-border text-[10px] font-mono font-bold text-muted-foreground tracking-wider">
           <div className="col-span-1">Category</div>
-          <div className="col-span-5">Question</div>
-          <div className="col-span-1 text-right">Yes</div>
-          <div className="col-span-1 text-right">No</div>
+          <div className="col-span-1"></div>
+          <div className="col-span-4">Question</div>
+          <div className="col-span-2 text-right">Prices</div>
           <div className="col-span-1 text-right">Volume</div>
           <div className="col-span-1 text-right">Traders</div>
           <div className="col-span-1 text-right">Expiry</div>
@@ -186,8 +209,6 @@ export function MarketGrid({ markets, isLoading }: MarketGridProps) {
         {/* Rows */}
         <div className="divide-y divide-border">
           {markets.map((market) => {
-            const yesPrice = market.prices[0] ?? 0.5;
-            const noPrice = market.prices[1] ?? 0.5;
             const countdown = compactCountdown(market.endsAt);
             const status = getStatus(market);
 
@@ -195,22 +216,34 @@ export function MarketGrid({ markets, isLoading }: MarketGridProps) {
               <Link
                 key={market.id}
                 href={`/markets/${market.id}`}
+                prefetch={false}
                 className="grid grid-cols-12 gap-0 px-3 py-2.5 hover:bg-primary/5 transition-colors items-center cursor-pointer group"
               >
                 <div className="col-span-1">
                   <span className="text-[10px] font-mono font-bold text-primary">{capitalize(market.category)}</span>
                 </div>
-                <div className="col-span-5 text-xs truncate group-hover:text-cyan transition-colors flex items-center gap-1.5">
+                <div className="col-span-1 flex items-center">
+                  <div className={`h-8 w-8 rounded overflow-hidden bg-gradient-to-br ${CATEGORY_COLORS[market.category] ?? "from-muted/20 to-muted/5"}`}>
+                    {market.thumbnailUrl && (
+                      <img src={market.thumbnailUrl} alt="" className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    )}
+                  </div>
+                </div>
+                <div className="col-span-4 text-xs truncate group-hover:text-cyan transition-colors flex items-center gap-1.5">
                   {market.marketType === "private" && (
                     <LockKey className="h-2.5 w-2.5 shrink-0 text-primary" weight="duotone" />
                   )}
                   {market.question}
                 </div>
-                <div className="col-span-1 text-right font-mono text-xs text-yes font-bold">
-                  {(yesPrice * 100).toFixed(1)}%
-                </div>
-                <div className="col-span-1 text-right font-mono text-xs text-no">
-                  {(noPrice * 100).toFixed(1)}%
+                <div className="col-span-2 flex justify-end gap-2 font-mono text-xs">
+                  {market.prices.slice(0, 2).map((p, i) => (
+                    <span key={i} className={i === 0 ? "text-yes font-bold" : "text-no"}>
+                      {market.outcomes[i] ?? (i === 0 ? "Yes" : "No")} {(p * 100).toFixed(0)}%
+                    </span>
+                  ))}
+                  {market.outcomes.length > 2 && (
+                    <span className="text-muted-foreground">+{market.outcomes.length - 2}</span>
+                  )}
                 </div>
                 <div className="col-span-1 text-right font-mono text-xs">{market.volume}</div>
                 <div className="col-span-1 text-right font-mono text-xs">{market.traders ?? 0}</div>

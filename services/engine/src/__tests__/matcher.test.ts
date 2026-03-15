@@ -322,8 +322,7 @@ describe("Matcher", () => {
   });
 
   describe("self-trade", () => {
-    it("does not prevent self-trade (engine layer responsibility)", async () => {
-      // Both orders from the same user
+    it("prevents self-trade when incoming user matches resting user", async () => {
       await book.addOrder(
         makeOrder({ nonce: "a1", side: "ASK", price: "0.65", amount: "50", user: "0xAlice" }),
       );
@@ -336,8 +335,8 @@ describe("Matcher", () => {
       });
       const result = await matcher.match(bid);
 
-      // Matcher does not enforce self-trade prevention (that's a higher-level concern)
-      expect(result.trades.length).toBe(1);
+      // Matcher skips resting orders from the same user
+      expect(result.trades.length).toBe(0);
     });
   });
 
@@ -584,7 +583,7 @@ describe("Matcher — AMM fallback", () => {
     expect(result.trades[0].makerOrder.isBuy).toBe(true); // admin buys
   });
 
-  it("skips AMM ASK when admin collateral check fails", async () => {
+  it("proceeds with AMM ASK when admin collateral check fails (RPC error)", async () => {
     ammConfig.checkAdminCollateralBalance = vi
       .fn()
       .mockRejectedValue(new Error("rpc down"));
@@ -598,8 +597,10 @@ describe("Matcher — AMM fallback", () => {
     });
     const result = await matcher.match(ask);
 
-    expect(result.trades.length).toBe(0);
-    expect(result.restingOnBook).toBe(true);
+    // On RPC error, the matcher now proceeds (like BUY-side auto-split)
+    // rather than silently rejecting.  Settlement will verify on-chain.
+    expect(result.trades.length).toBe(1);
+    expect(result.trades[0].buyer).toBe("0xAdmin");
   });
 
   it("does not overfill admin collateral across CLOB + AMM in one match", async () => {

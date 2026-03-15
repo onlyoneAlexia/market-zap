@@ -19,7 +19,7 @@ export async function createTables(pool: Pool): Promise<void> {
         resolution_source TEXT NOT NULL DEFAULT '',
         resolution_time TIMESTAMPTZ,
         status          TEXT NOT NULL DEFAULT 'ACTIVE'
-                        CHECK (status IN ('ACTIVE', 'PAUSED', 'RESOLVED', 'VOIDED')),
+                        CHECK (status IN ('ACTIVE', 'PAUSED', 'PROPOSED', 'RESOLVED', 'VOIDED')),
         winning_outcome INTEGER,
         total_volume    NUMERIC(78, 0) NOT NULL DEFAULT 0,
         liquidity       NUMERIC(78, 0) NOT NULL DEFAULT 0,
@@ -36,6 +36,19 @@ export async function createTables(pool: Pool): Promise<void> {
     `);
     await client.query(`
       ALTER TABLE markets ADD COLUMN IF NOT EXISTS market_type TEXT NOT NULL DEFAULT 'public' CHECK (market_type IN ('public', 'private'));
+    `);
+    await client.query(`
+      ALTER TABLE markets ADD COLUMN IF NOT EXISTS thumbnail_url TEXT DEFAULT NULL;
+    `);
+
+    // Migrate status CHECK to include 'PROPOSED' for 2-phase resolution
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE markets DROP CONSTRAINT IF EXISTS markets_status_check;
+        ALTER TABLE markets ADD CONSTRAINT markets_status_check
+          CHECK (status IN ('ACTIVE', 'PAUSED', 'PROPOSED', 'RESOLVED', 'VOIDED'));
+      EXCEPTION WHEN undefined_table THEN NULL;
+      END $$;
     `);
 
     await client.query(`

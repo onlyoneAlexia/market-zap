@@ -110,6 +110,14 @@ export function scheduleOrderSettlement({
 
     await deps.db.updateOrderStatus(data.nonce, "CANCELLED", "0");
 
+    // Notify the frontend that this order was rolled back so it can
+    // remove it from the "open orders" list immediately.
+    deps.ws.broadcast(`trades:${data.marketId}`, {
+      type: "order_cancelled",
+      nonce: data.nonce,
+      reason: "settlement_failed",
+    });
+
     try {
       await deps.matcher.withLock(dbMarketId, data.outcomeIndex, async () => {
         if (matchResult.restedOrder) {
@@ -235,52 +243,55 @@ export function scheduleOrderSettlement({
       if (clobRows.length > 0) {
         if (marketIsDark) {
           const tradeTokenId = computeTokenId(conditionId, data.outcomeIndex);
-          for (const { dbId, trade } of clobRows) {
-            const makerHash = computeOrderHash({
-              trader: trade.makerOrder.trader,
-              marketId: BigInt(onChainMarketId),
-              tokenId: tradeTokenId,
-              nonce: BigInt(trade.makerOrder.nonce),
-              isBuy: trade.makerOrder.isBuy,
-              price: scalePriceShared(trade.makerOrder.price),
-              amount: BigInt(trade.makerOrder.amount),
-              expiry: BigInt(trade.makerOrder.expiry),
-            }, deps.settler.exchangeAddr, constants.StarknetChainId.SN_SEPOLIA);
-            const takerHash = computeOrderHash({
-              trader: trade.takerOrder.trader,
-              marketId: BigInt(onChainMarketId),
-              tokenId: tradeTokenId,
-              nonce: BigInt(trade.takerOrder.nonce),
-              isBuy: trade.takerOrder.isBuy,
-              price: scalePriceShared(trade.takerOrder.price),
-              amount: BigInt(trade.takerOrder.amount),
-              expiry: BigInt(trade.takerOrder.expiry),
-            }, deps.settler.exchangeAddr, constants.StarknetChainId.SN_SEPOLIA);
-            const commitment = computeTradeCommitment(
+          const darkTrades = clobRows.map(({ trade }) => {
+            const makerHash = computeOrderHash(
+              {
+                trader: trade.makerOrder.trader,
+                marketId: BigInt(onChainMarketId),
+                tokenId: tradeTokenId,
+                nonce: BigInt(trade.makerOrder.nonce),
+                isBuy: trade.makerOrder.isBuy,
+                price: scalePriceShared(trade.makerOrder.price),
+                amount: BigInt(trade.makerOrder.amount),
+                expiry: BigInt(trade.makerOrder.expiry),
+              },
+              deps.settler.exchangeAddr,
+              constants.StarknetChainId.SN_SEPOLIA,
+            );
+            const takerHash = computeOrderHash(
+              {
+                trader: trade.takerOrder.trader,
+                marketId: BigInt(onChainMarketId),
+                tokenId: tradeTokenId,
+                nonce: BigInt(trade.takerOrder.nonce),
+                isBuy: trade.takerOrder.isBuy,
+                price: scalePriceShared(trade.takerOrder.price),
+                amount: BigInt(trade.takerOrder.amount),
+                expiry: BigInt(trade.takerOrder.expiry),
+              },
+              deps.settler.exchangeAddr,
+              constants.StarknetChainId.SN_SEPOLIA,
+            );
+            const tradeCommitment = computeTradeCommitment(
               makerHash,
               takerHash,
               BigInt(trade.fillAmount),
             );
-            const result = await deps.settler.settleDarkTrade({
-              trade,
-              collateralToken: market.collateral_token,
-              tokenId,
-              onChainMarketId,
-              reserveExpiry,
-              tradeCommitment: commitment,
-            });
-            if (!result.success) {
-              await deps.db.markTradeFailed(dbId, result.error ?? "Dark settlement failed");
-              tradesFailed.inc();
-              deps.ws.broadcast(`trades:${data.marketId}`, {
-                type: "trade_failed",
-                tradeId: dbId,
-                error: result.error ?? "Dark settlement failed",
-              });
-              continue;
-            }
-            await markSettled([{ dbId, trade }], result.txHash);
+            return { trade, tradeCommitment };
+          });
+
+          const result = await deps.settler.settleDarkTradesAtomic(
+            darkTrades,
+            market.collateral_token,
+            tokenId,
+            onChainMarketId,
+            reserveExpiry,
+          );
+          if (!result.success) {
+            await handleSettlementFailure(result.error ?? "Dark settlement failed");
+            return;
           }
+          await markSettled(clobRows, result.txHash);
         } else {
           const result = await deps.settler.settleTradesAtomic(
             clobRows.map((row) => row.trade),
@@ -395,17 +406,30 @@ export function scheduleOrderSettlement({
         const correctedFilled = originalFilled - ammRolledBackFill;
         const correctedRemaining = matchResult.remainingAmount + ammRolledBackFill;
         const correctedStatus =
-          correctedFilled <= 0n
-            ? "OPEN"
-            : correctedFilled < BigInt(data.amount)
+          data.orderType === "MARKET"
+            ? correctedFilled > 0n
               ? "PARTIALLY_FILLED"
-              : "FILLED";
+              : "CANCELLED"
+            : correctedFilled <= 0n
+              ? "OPEN"
+              : correctedFilled < BigInt(data.amount)
+                ? "PARTIALLY_FILLED"
+                : "FILLED";
         try {
           await deps.db.updateOrderStatus(
             data.nonce,
-            correctedStatus as "OPEN" | "PARTIALLY_FILLED" | "FILLED",
+            correctedStatus as "OPEN" | "PARTIALLY_FILLED" | "FILLED" | "CANCELLED",
             (correctedFilled > 0n ? correctedFilled : 0n).toString(),
           );
+          if (correctedStatus === "CANCELLED") {
+            deps.ws.broadcast(`trades:${data.marketId}`, {
+              type: "order_cancelled",
+              nonce: data.nonce,
+              reason: "settlement_failed",
+            });
+            await deps.db.deleteOrderReservation(data.nonce);
+            await deps.db.deleteOutcomeOrderReservation(data.nonce);
+          }
           if (data.orderType === "LIMIT" && correctedRemaining > 0n) {
             const existing = await deps.orderBook.findOrderByNonce(
               dbMarketId,

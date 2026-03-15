@@ -23,6 +23,7 @@ import { loadAdminPrivateKey } from "./keystore.js";
 
 const PORT = Number(process.env.PORT) || 3001;
 const NETWORK = (process.env.STARKNET_NETWORK ?? "sepolia") as SupportedNetwork;
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const EXCHANGE_ADDRESS = process.env.EXCHANGE_ADDRESS ?? getContractAddress("CLOBRouter", NETWORK);
 const ADMIN_PRIVATE_KEY = loadAdminPrivateKey();
 const ADMIN_ADDRESS = requireEnv("ADMIN_ADDRESS");
@@ -33,6 +34,11 @@ const RESOLVER_ADDRESS =
 
 async function main(): Promise<void> {
   logger.info("starting Market-Zap CLOB engine...");
+
+  if (IS_PRODUCTION && !process.env.ENGINE_API_KEY?.trim()) {
+    logger.fatal("missing required environment variable in production: ENGINE_API_KEY");
+    process.exit(1);
+  }
 
   const redis = new RedisClient({
     url: process.env.REDIS_URL,
@@ -48,6 +54,14 @@ async function main(): Promise<void> {
 
   const orderBook = new OrderBook(redis);
   const ammState = new AmmStateManager(redis);
+  const DEPLOY_BLOCK = 7_496_594; // block the contracts were deployed on Sepolia
+  const indexer = new ApibaraIndexer(db, redis, {
+    exchangeAddress: EXCHANGE_ADDRESS,
+    conditionalTokensAddress: CONDITIONAL_TOKENS_ADDRESS,
+    marketFactoryAddress: MARKET_FACTORY_ADDRESS,
+    resolverAddress: RESOLVER_ADDRESS,
+    startBlock: DEPLOY_BLOCK,
+  });
 
   const balanceChecker = new BalanceChecker(redis, {
     exchangeAddress: EXCHANGE_ADDRESS,
@@ -90,6 +104,7 @@ async function main(): Promise<void> {
   await rebuildOrderbook(db, orderBook);
 
   const app = express();
+  configureTrustProxy(app);
   app.use(cors());
   app.use(compression());
   app.use(express.json());
@@ -105,20 +120,18 @@ async function main(): Promise<void> {
     ws: wsManager,
     ammState,
     redis,
+  }, {
+    health: {
+      checkDatabase: () => db.healthCheck(),
+      checkRedis: async () => (await redis.ping()) === "PONG",
+      getIndexerState: () => indexer.getState(),
+    },
   });
   app.use(router);
   app.use(errorHandler);
 
   const httpServer = createServer(app);
   wsManager.attach(httpServer);
-
-  const indexer = new ApibaraIndexer(db, {
-    exchangeAddress: EXCHANGE_ADDRESS,
-    conditionalTokensAddress: CONDITIONAL_TOKENS_ADDRESS,
-    marketFactoryAddress: MARKET_FACTORY_ADDRESS,
-    resolverAddress: RESOLVER_ADDRESS,
-    startBlock: 0,
-  });
   await indexer.start();
 
   httpServer.listen(PORT, () => {
@@ -390,6 +403,25 @@ async function retryPendingSettlements(
   }
 
   logger.info("pending settlement retry complete");
+}
+
+function configureTrustProxy(app: express.Express): void {
+  const raw = process.env.TRUST_PROXY?.trim();
+  if (!raw || raw === "false") {
+    return;
+  }
+
+  if (raw === "true") {
+    app.set("trust proxy", true);
+    return;
+  }
+
+  if (/^\d+$/.test(raw)) {
+    app.set("trust proxy", Number(raw));
+    return;
+  }
+
+  app.set("trust proxy", raw);
 }
 
 function requireEnv(name: string): string {

@@ -45,7 +45,7 @@ pub trait IAdminResolver<TContractState> {
 
     /// Finalize a proposal after the dispute period has elapsed.
     /// Anyone may call.  Reports payouts to ConditionalTokens.
-    fn finalize_resolution(ref self: TContractState, condition_id: felt252);
+    fn finalize_resolution(ref self: TContractState, market_id: u64, condition_id: felt252);
 
     /// Override an existing proposal during the dispute window.
     /// Admin only.  Resets the dispute timer.
@@ -62,6 +62,10 @@ pub trait IAdminResolver<TContractState> {
     /// Admin: update the default dispute period (in seconds).
     fn set_dispute_period(ref self: TContractState, new_period: u64);
 
+    /// Admin: update the configurable min/max dispute period bounds.
+    /// new_min must be >= 60s (hard safety floor). new_min must be <= new_max.
+    fn set_dispute_bounds(ref self: TContractState, new_min: u64, new_max: u64);
+
     /// Transfer admin role to a new address.
     fn transfer_admin(ref self: TContractState, new_admin: ContractAddress);
 
@@ -74,6 +78,9 @@ pub trait IAdminResolver<TContractState> {
 
     /// Current dispute period setting (seconds).
     fn get_dispute_period(self: @TContractState) -> u64;
+
+    /// Current min/max dispute period bounds (seconds).
+    fn get_dispute_bounds(self: @TContractState) -> (u64, u64);
 
     /// Current admin address.
     fn get_admin(self: @TContractState) -> ContractAddress;

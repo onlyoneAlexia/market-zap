@@ -25,7 +25,7 @@ describe("wallet telemetry", () => {
     await Promise.resolve();
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      expect.stringContaining("/api/telemetry/wallet"),
+      expect.stringContaining("/engine-api/telemetry/wallet"),
       expect.objectContaining({
         method: "POST",
         keepalive: true,

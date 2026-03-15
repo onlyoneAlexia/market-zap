@@ -1,14 +1,17 @@
 import { RpcProvider, hash } from "starknet";
 import type { EventFilter } from "starknet";
 import type { Database } from "../db/postgres.js";
+import type { RedisClient } from "../db/redis.js";
 
 const DEFAULT_RPC_URL = "https://api.zan.top/public/starknet-sepolia/rpc/v0_8";
 const DEFAULT_POLL_INTERVAL = 5_000;
-const DEFAULT_BATCH_BLOCKS = 50;
+const DEFAULT_BATCH_BLOCKS = 500;
 const DEFAULT_CHUNK_SIZE = 200;
 const RATE_LIMIT_BACKOFF_BASE_MS = 10_000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 120_000;
 const RATE_LIMIT_LOG_INTERVAL_MS = 15_000;
+
+const REDIS_BLOCK_KEY = "indexer:lastProcessedBlock";
 
 function normalizeHex(input: string): string {
   const stripped = input.replace(/^0x/i, "").replace(/^0+/, "");
@@ -19,6 +22,75 @@ function decodeU256(low: string | undefined, high: string | undefined): bigint {
   const lowPart = low ? BigInt(low) : 0n;
   const highPart = high ? BigInt(high) : 0n;
   return (highPart << 128n) + lowPart;
+}
+
+/**
+ * Decode a Cairo ByteArray from flat felt252 data fields.
+ *
+ * Cairo ByteArray serialization layout:
+ *   data[offset+0]          = number of full 31-byte chunks (n)
+ *   data[offset+1..n]       = each chunk as a felt252 (31 bytes, big-endian)
+ *   data[offset+n+1]        = pending word (< 31 bytes, big-endian)
+ *   data[offset+n+2]        = pending word length in bytes
+ *
+ * Returns { text, consumed } where consumed is how many data fields were read.
+ */
+function decodeByteArray(data: string[], offset: number): { text: string; consumed: number } {
+  if (offset >= data.length) return { text: "", consumed: 0 };
+
+  const numChunks = Number(BigInt(data[offset]));
+  let consumed = 1; // the count field itself
+  const bytes: number[] = [];
+
+  // Full 31-byte chunks
+  for (let i = 0; i < numChunks; i++) {
+    const chunkHex = BigInt(data[offset + consumed]).toString(16).padStart(62, "0");
+    for (let j = 0; j < 31; j++) {
+      bytes.push(parseInt(chunkHex.slice(j * 2, j * 2 + 2), 16));
+    }
+    consumed++;
+  }
+
+  // Pending word
+  if (offset + consumed + 1 < data.length) {
+    const pendingWord = BigInt(data[offset + consumed]);
+    const pendingLen = Number(BigInt(data[offset + consumed + 1]));
+    consumed += 2;
+
+    if (pendingLen > 0 && pendingLen <= 30) {
+      const pendingHex = pendingWord.toString(16).padStart(pendingLen * 2, "0");
+      for (let j = 0; j < pendingLen; j++) {
+        bytes.push(parseInt(pendingHex.slice(j * 2, j * 2 + 2), 16));
+      }
+    }
+  }
+
+  // Strip null bytes that can come from padding in Cairo ByteArrays
+  const filtered = bytes.filter((b) => b !== 0);
+  const text = Buffer.from(filtered).toString("utf-8");
+  return { text, consumed };
+}
+
+/**
+ * Decode a felt252 as a short ASCII string (for category labels).
+ * If the felt is too large to be a short string (> 31 bytes) or contains
+ * non-printable characters, return "general" as fallback.
+ */
+function feltToString(felt: string): string {
+  const bn = BigInt(felt);
+  if (bn === 0n) return "general";
+  const hex = bn.toString(16);
+  // Short strings in Cairo are at most 31 bytes = 62 hex chars
+  if (hex.length > 62) return "general";
+  const padded = hex.length % 2 === 1 ? "0" + hex : hex;
+  const bytes: number[] = [];
+  for (let i = 0; i < padded.length; i += 2) {
+    const b = parseInt(padded.slice(i, i + 2), 16);
+    // Only printable ASCII (32-126)
+    if (b < 32 || b > 126) return "general";
+    bytes.push(b);
+  }
+  return Buffer.from(bytes).toString("utf-8");
 }
 
 interface RawChainEvent {
@@ -36,11 +108,14 @@ interface RawChainEvent {
 export interface MarketCreatedEvent {
   type: "MarketCreated";
   marketId: string;
+  onChainMarketId: string;
   title: string;
   description: string;
   outcomeCount: number;
   outcomeLabels: string[];
   collateralToken: string;
+  conditionId: string;
+  category: string;
   resolutionSource: string;
   resolutionTime: number | null;
   blockNumber: number;
@@ -127,7 +202,7 @@ export interface ApibaraIndexerOptions {
   conditionalTokensAddress: string;
   marketFactoryAddress: string;
   resolverAddress?: string;
-  /** Starting block number (default: 0). */
+  /** Starting block number (used only if no checkpoint in Redis). */
   startBlock?: number;
   /** Polling interval in ms (default: 5000). */
   pollInterval?: number;
@@ -143,15 +218,18 @@ export interface ApibaraIndexerOptions {
  * Starknet event indexer (polling-based fallback for Apibara).
  *
  * Uses Starknet RPC `getEvents` to continuously ingest core protocol events:
+ * - MarketFactory MarketCreated -> auto-create market DB rows
  * - Resolver ResolutionFinalized -> market status updates
  * - ConditionalTokens PositionRedeemed -> redemption records
  * - ConditionalTokens PositionSplit/PositionMerged -> observability logs
  */
 export class ApibaraIndexer {
   private readonly db: Database;
+  private readonly redis: RedisClient;
   private readonly options: ApibaraIndexerOptions;
   private readonly provider: RpcProvider;
   private readonly selectors: {
+    marketCreated: string;
     positionSplit: string;
     positionMerged: string;
     positionRedeemed: string;
@@ -164,13 +242,15 @@ export class ApibaraIndexer {
   private suppressPollingUntil = 0;
   private lastRateLimitLogAt = 0;
 
-  constructor(db: Database, options: ApibaraIndexerOptions) {
+  constructor(db: Database, redis: RedisClient, options: ApibaraIndexerOptions) {
     this.db = db;
+    this.redis = redis;
     this.options = options;
     this.provider = new RpcProvider({
       nodeUrl: options.rpcUrl ?? process.env.STARKNET_RPC_URL ?? DEFAULT_RPC_URL,
     });
     this.selectors = {
+      marketCreated: hash.getSelectorFromName("MarketCreated").toLowerCase(),
       positionSplit: hash.getSelectorFromName("PositionSplit").toLowerCase(),
       positionMerged: hash.getSelectorFromName("PositionMerged").toLowerCase(),
       positionRedeemed: hash.getSelectorFromName("PositionRedeemed").toLowerCase(),
@@ -191,6 +271,16 @@ export class ApibaraIndexer {
     if (this.state.running) {
       console.warn("[indexer] already running");
       return;
+    }
+
+    // Restore checkpoint from Redis (survives restarts)
+    const saved = await this.redis.get(REDIS_BLOCK_KEY);
+    if (saved) {
+      const parsed = Number(saved);
+      if (Number.isFinite(parsed) && parsed > this.state.lastProcessedBlock) {
+        this.state.lastProcessedBlock = parsed;
+        console.log(`[indexer] resumed from Redis checkpoint: block ${parsed}`);
+      }
     }
 
     this.state.running = true;
@@ -224,6 +314,12 @@ export class ApibaraIndexer {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+
+    // Persist final checkpoint
+    await this.redis.set(
+      REDIS_BLOCK_KEY,
+      String(this.state.lastProcessedBlock),
+    );
 
     console.log("[indexer] stopped");
   }
@@ -267,6 +363,12 @@ export class ApibaraIndexer {
       this.state.lastProcessedBlock = toBlock;
       this.rateLimitStreak = 0;
       this.suppressPollingUntil = 0;
+
+      // Persist checkpoint every batch
+      await this.redis.set(
+        REDIS_BLOCK_KEY,
+        String(toBlock),
+      );
     } catch (err) {
       const message = compactErrorMessage(err);
       if (isRateLimitedError(message)) {
@@ -303,6 +405,14 @@ export class ApibaraIndexer {
     const allEvents: RawChainEvent[] = [];
 
     const sources: Array<Promise<RawChainEvent[]>> = [
+      // MarketFactory: MarketCreated
+      this.fetchAddressEvents(
+        this.options.marketFactoryAddress,
+        [this.selectors.marketCreated],
+        fromBlock,
+        toBlock,
+      ),
+      // ConditionalTokens: PositionSplit, PositionMerged, PositionRedeemed
       this.fetchAddressEvents(
         this.options.conditionalTokensAddress,
         [
@@ -415,6 +525,12 @@ export class ApibaraIndexer {
     for (const raw of rawEvents) {
       const selector = raw.keys[0]?.toLowerCase() ?? "";
 
+      if (selector === this.selectors.marketCreated) {
+        const evt = this.decodeMarketCreated(raw);
+        if (evt) decoded.push(evt);
+        continue;
+      }
+
       if (selector === this.selectors.resolutionFinalized) {
         const evt = await this.decodeResolutionFinalized(raw);
         if (evt) decoded.push(evt);
@@ -440,6 +556,63 @@ export class ApibaraIndexer {
     }
 
     return decoded;
+  }
+
+  /**
+   * Decode MarketCreated event from the MarketFactory contract.
+   *
+   * On-chain event layout:
+   *   keys[0] = selector
+   *   keys[1] = market_id (u64, #[key])
+   *   keys[2] = creator (ContractAddress, #[key])
+   *   data[0] = condition_id (felt252)
+   *   data[1..N] = question (ByteArray: chunk_count, chunks..., pending_word, pending_len)
+   *   data[N]   = category (felt252)
+   *   data[N+1] = resolution_time (u64)
+   */
+  private decodeMarketCreated(raw: RawChainEvent): MarketCreatedEvent | null {
+    if (raw.keys.length < 3 || raw.data.length < 4) return null;
+
+    const onChainMarketId = Number(BigInt(raw.keys[1])).toString();
+    const conditionId = normalizeHex(raw.data[0]);
+
+    // Decode the ByteArray question starting at data[1]
+    const { text: question, consumed } = decodeByteArray(raw.data, 1);
+
+    // After the ByteArray: category and resolution_time
+    const categoryIdx = 1 + consumed;
+    const resTimeIdx = categoryIdx + 1;
+
+    if (resTimeIdx >= raw.data.length) return null;
+
+    const category = feltToString(raw.data[categoryIdx]);
+    const resolutionTime = Number(BigInt(raw.data[resTimeIdx]));
+
+    // Use on-chain market ID as the engine market ID (deterministic)
+    const marketId = `market-${onChainMarketId}`;
+
+    // Default to binary outcomes — the event doesn't carry outcome labels,
+    // but all current markets are Yes/No binary.
+    // TODO: read outcome_count from factory get_market if multi-outcome support is needed
+    const outcomeCount = 2;
+    const outcomeLabels = ["Yes", "No"];
+
+    return {
+      type: "MarketCreated",
+      marketId,
+      onChainMarketId,
+      title: question,
+      description: "",
+      outcomeCount,
+      outcomeLabels,
+      collateralToken: "", // will be populated from on-chain read in handler
+      conditionId,
+      category,
+      resolutionSource: "",
+      resolutionTime: resolutionTime > 0 ? resolutionTime : null,
+      blockNumber: raw.blockNumber,
+      txHash: raw.txHash,
+    };
   }
 
   private async decodeResolutionFinalized(
@@ -587,16 +760,49 @@ export class ApibaraIndexer {
 
   private async onMarketCreated(event: MarketCreatedEvent): Promise<void> {
     console.log(
-      `[indexer] MarketCreated: ${event.marketId} "${event.title}" (block ${event.blockNumber})`,
+      `[indexer] MarketCreated: on-chain #${event.onChainMarketId} "${event.title}" ` +
+        `conditionId=${event.conditionId} (block ${event.blockNumber})`,
     );
+
+    // Read collateral_token + outcome_count from factory contract
+    let collateralToken = event.collateralToken;
+    let outcomeCount = event.outcomeCount;
+    try {
+      const factoryAddress = this.options.marketFactoryAddress;
+      const result = await this.provider.callContract({
+        contractAddress: factoryAddress,
+        entrypoint: "get_market",
+        calldata: [event.onChainMarketId],
+      });
+      // Market struct fields: market_id, creator, condition_id, collateral_token,
+      // question_hash, category, outcome_count, created_at, resolution_time,
+      // bond_refunded, voided, volume (u256: low, high), market_type
+      if (result.length >= 7) {
+        collateralToken = normalizeHex(result[3]);
+        outcomeCount = Number(BigInt(result[6]));
+      }
+    } catch (err) {
+      console.warn(
+        `[indexer] could not read get_market(${event.onChainMarketId}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    const outcomeLabels =
+      outcomeCount === 2
+        ? ["Yes", "No"]
+        : Array.from({ length: outcomeCount }, (_, i) => `Outcome ${i + 1}`);
 
     await this.db.upsertMarket({
       marketId: event.marketId,
+      onChainMarketId: event.onChainMarketId,
+      conditionId: event.conditionId,
       title: event.title,
       description: event.description,
-      outcomeCount: event.outcomeCount,
-      outcomeLabels: event.outcomeLabels,
-      collateralToken: event.collateralToken,
+      category: event.category,
+      outcomeCount,
+      outcomeLabels,
+      collateralToken,
       resolutionSource: event.resolutionSource,
       resolutionTime: event.resolutionTime
         ? new Date(event.resolutionTime * 1000)

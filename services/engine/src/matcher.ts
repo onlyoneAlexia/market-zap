@@ -217,6 +217,11 @@ export class Matcher {
 
       if (!isPriceMarketable(incoming, best)) break;
 
+      // Skip self-trades — same user on both sides.
+      if (incoming.user.toLowerCase() === best.user.toLowerCase()) {
+        break;
+      }
+
       const restingRemaining = BigInt(best.remainingAmount);
       if (restingRemaining <= 0n) {
         // Defensive: should never happen, but keep the book clean.
@@ -420,6 +425,11 @@ export class Matcher {
       checkAdminOutcomeBalance,
     } = this.ammConfig;
 
+    // AMM counterparty is the admin — reject if incoming user IS the admin.
+    if (incoming.user.toLowerCase() === adminAddress.toLowerCase()) {
+      return null;
+    }
+
     // Load pool state.
     const state = await ammState.loadState(incoming.marketId);
     if (!state || !state.active) return null;
@@ -532,11 +542,13 @@ export class Matcher {
           return null;
         }
       } catch (err) {
+        // RPC error — proceed anyway (same as BUY-side auto-split fallback).
+        // Settlement will perform its own on-chain balance checks; if the
+        // admin truly lacks collateral, the tx will revert and be rolled back.
         console.warn(
-          "[matcher] AMM skipped: could not verify admin collateral balance",
+          "[matcher] could not verify admin collateral balance, proceeding anyway",
           err instanceof Error ? err.message : err,
         );
-        return null;
       }
     }
 
@@ -556,7 +568,7 @@ export class Matcher {
     const adminNonce = generateAmmNonce();
     const adminExpiry = Math.floor(Date.now() / 1000) + 3600; // 1 hour
 
-    const adminSig = signAdminOrder({
+    const signParams = {
       trader: adminAddress,
       marketId: BigInt(marketInfo.onChainMarketId),
       tokenId,
@@ -565,7 +577,8 @@ export class Matcher {
       amount: actualFillAmount,
       nonce: BigInt(adminNonce),
       expiry: BigInt(adminExpiry),
-    });
+    };
+    const adminSig = signAdminOrder(signParams);
 
     // Construct Trade.
     const buyer = incoming.side === "BID" ? incoming.user : adminAddress;

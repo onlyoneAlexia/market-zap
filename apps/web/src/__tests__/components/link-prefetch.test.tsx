@@ -66,16 +66,21 @@ vi.mock("@/components/ui/theme-toggle", () => ({
   ThemeToggle: () => <button type="button">Theme</button>,
 }));
 
+vi.mock("@/hooks/use-operator", () => ({
+  useIsOperator: () => false,
+}));
+
 describe("link prefetch behavior", () => {
   it("uses framework prefetch for navbar links", () => {
     render(<Navbar />);
 
-    expect(
-      screen.getByRole("link", { name: /Markets/i }).getAttribute("data-prefetch"),
-    ).toBe("default");
-    expect(
-      screen.getByRole("link", { name: /Account/i }).getAttribute("data-prefetch"),
-    ).toBe("default");
+    screen.getAllByRole("link", { name: /^Markets$/i }).forEach((link) => {
+      expect(link.getAttribute("data-prefetch")).toBe("true");
+    });
+
+    screen.getAllByRole("link", { name: /^Account$/i }).forEach((link) => {
+      expect(link.getAttribute("data-prefetch")).toBe("true");
+    });
   });
 
   it("keeps eager prefetch disabled for market cards", () => {

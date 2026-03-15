@@ -46,7 +46,9 @@ export function createMockDeps(): RestDeps {
       settleTradesAtomic: vi.fn().mockResolvedValue({ success: true, txHash: "0x123" }),
       settleAmmTradeAtomic: vi.fn().mockResolvedValue({ success: true, txHash: "0xamm", tradeId: "t1" }),
       settleDarkTrade: vi.fn().mockResolvedValue({ success: true, txHash: "0xdark", tradeId: "t1" }),
-      resolveMarket: vi.fn().mockResolvedValue({ success: true, txHash: "0xresolve" }),
+      settleDarkTradesAtomic: vi.fn().mockResolvedValue({ success: true, txHash: "0xdark" }),
+      proposeResolution: vi.fn().mockResolvedValue({ success: true, txHash: "0xpropose" }),
+      finalizeResolution: vi.fn().mockResolvedValue({ success: true, txHash: "0xfinalize" }),
       registerDarkMarket: vi.fn().mockResolvedValue({ success: true, txHash: "0xregister" }),
       setupSeedLiquidity: vi.fn().mockResolvedValue({ success: true, txHash: "0xseed" }),
       adminAddr: "0xAdmin",
@@ -88,6 +90,7 @@ export function createMockDeps(): RestDeps {
       insertRedemption: vi.fn().mockResolvedValue(undefined),
       getOpenOrders: vi.fn().mockResolvedValue([]),
       getOrderByNonce: vi.fn().mockResolvedValue(null),
+      healthCheck: vi.fn().mockResolvedValue(true),
     } as any,
     ws: { broadcast: vi.fn() } as any,
     ammState: {
@@ -115,11 +118,16 @@ export async function request(
   method: string,
   path: string,
   body?: unknown,
+  headers?: Record<string, string>,
 ): Promise<{ status: number; body: any }> {
   const reqEm = new EventEmitter() as any;
   reqEm.method = method.toUpperCase();
   reqEm.url = path;
-  reqEm.headers = { "content-type": "application/json", accept: "application/json" };
+  reqEm.headers = {
+    "content-type": "application/json",
+    accept: "application/json",
+    ...(headers ?? {}),
+  };
   if (body !== undefined) reqEm.body = body;
 
   const chunks: Buffer[] = [];
@@ -211,8 +219,13 @@ export function createRestTestHarness() {
   return {
     app,
     deps,
-    req(method: string, path: string, body?: unknown) {
-      return request(app, method, path, body);
+    req(
+      method: string,
+      path: string,
+      body?: unknown,
+      headers?: Record<string, string>,
+    ) {
+      return request(app, method, path, body, headers);
     },
     reset() {
       resetMockDeps(deps);

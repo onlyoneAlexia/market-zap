@@ -5,21 +5,23 @@ import {
   walletTelemetryDuration,
   walletTelemetryEvents,
 } from "../metrics.js";
-import { asyncHandler, ok, WalletTelemetrySchema } from "./rest-shared.js";
+import {
+  asyncHandler,
+  authorizeAdminRequest,
+  ok,
+  WalletTelemetrySchema,
+} from "./rest-shared.js";
 import type { RestRouteContext } from "./rest-types.js";
 
 export function registerGeneralRoutes(
   router: Router,
-  _context: RestRouteContext,
+  context: RestRouteContext,
 ): void {
   router.get("/metrics", async (req: Request, res: Response) => {
-    const apiKey = process.env.ENGINE_API_KEY;
-    if (apiKey) {
-      const auth = req.headers.authorization;
-      if (!auth || auth !== `Bearer ${apiKey}`) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
+    const authResult = authorizeAdminRequest(req);
+    if (!authResult.ok) {
+      res.status(authResult.status).json({ error: authResult.error });
+      return;
     }
 
     try {
@@ -65,5 +67,54 @@ export function registerGeneralRoutes(
 
   router.get("/api/health", (_req: Request, res: Response) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  router.get(
+    "/api/ready",
+    asyncHandler(async (_req: Request, res: Response) => {
+      const databaseReady = context.health?.checkDatabase
+        ? await context.health.checkDatabase().catch(() => false)
+        : null;
+      const redisReady = context.health?.checkRedis
+        ? await context.health.checkRedis().catch(() => false)
+        : null;
+      const indexerState = context.health?.getIndexerState?.() ?? null;
+
+      const checks = {
+        database: databaseReady === null ? "unknown" : databaseReady ? "ok" : "error",
+        redis: redisReady === null ? "unknown" : redisReady ? "ok" : "error",
+        indexer:
+          indexerState === null
+            ? "unknown"
+            : indexerState.running
+              ? "ok"
+              : "error",
+      } as const;
+
+      const isReady =
+        (databaseReady ?? true) &&
+        (redisReady ?? true) &&
+        (indexerState?.running ?? true);
+
+      res.status(isReady ? 200 : 503).json({
+        status: isReady ? "ready" : "degraded",
+        timestamp: new Date().toISOString(),
+        checks,
+        indexer:
+          indexerState === null
+            ? null
+            : {
+                running: indexerState.running,
+                lastProcessedBlock: indexerState.lastProcessedBlock,
+              },
+      });
+    }),
+  );
+
+  // Public config — exposes non-sensitive protocol addresses for the frontend.
+  router.get("/api/config", (_req: Request, res: Response) => {
+    ok(res, {
+      operatorAddress: context.deps.settler.adminAddr,
+    });
   });
 }

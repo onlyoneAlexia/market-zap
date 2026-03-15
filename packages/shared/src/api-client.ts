@@ -388,7 +388,7 @@ export class MarketZapAPI {
    */
   async getMarketStats(
     marketId: string,
-    opts?: { interval?: "1h" | "6h" | "1d"; limit?: number },
+    opts?: { interval?: "5m" | "15m" | "1h" | "6h" | "1d"; limit?: number },
   ): Promise<MarketStats> {
     const params: Record<string, string | number> = {};
     if (opts?.interval) params.interval = opts.interval;
@@ -565,19 +565,15 @@ export class MarketZapAPI {
     return this.get<PaginatedResponse<LeaderboardEntry>>("/leaderboard", params as Record<string, string | number | undefined>);
   }
 
+  // -----------------------------------------------------------------------
+  // Config
+  // -----------------------------------------------------------------------
+
   /**
-   * Record a successful on-chain claim so the position stops showing as claimable.
+   * Fetch public protocol config (operator address, etc.).
    */
-  async recordClaim(
-    address: string,
-    marketId: string,
-    outcomeIndex: number,
-    txHash: string,
-  ): Promise<{ claimed: boolean }> {
-    return this.post<{ claimed: boolean }>(
-      `/portfolio/${encodeURIComponent(address)}/claim`,
-      { marketId, outcomeIndex, txHash },
-    );
+  async getConfig(): Promise<{ operatorAddress: string }> {
+    return this.get<{ operatorAddress: string }>("/config");
   }
 
   // -----------------------------------------------------------------------
@@ -585,14 +581,37 @@ export class MarketZapAPI {
   // -----------------------------------------------------------------------
 
   /**
-   * Resolve a market on-chain and in the DB (admin only).
-   *
-   * Calls the engine's admin endpoint which handles both the propose +
-   * finalize phases atomically.
+   * Phase 1: Propose a market resolution on-chain (admin only).
+   * Returns immediately after proposal tx is confirmed.
+   * Caller must wait for dispute period before calling `finalizeResolution`.
    */
-  async resolveMarket(
+  async proposeResolution(
     marketId: string,
     winningOutcome: number,
+    apiKey?: string,
+  ): Promise<{
+    market: Market;
+    proposalTxHash: string;
+    disputePeriodSeconds: number;
+    finalizeAfter: string;
+  }> {
+    const authHeaders: Record<string, string> = apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : {};
+    return this.request<{
+      market: Market;
+      proposalTxHash: string;
+      disputePeriodSeconds: number;
+      finalizeAfter: string;
+    }>("POST", "/admin/propose-resolution", { marketId, winningOutcome }, undefined, authHeaders);
+  }
+
+  /**
+   * Phase 2: Finalize a previously proposed resolution (admin only).
+   * Must be called after the dispute period has elapsed.
+   */
+  async finalizeResolution(
+    marketId: string,
     apiKey?: string,
   ): Promise<{ market: Market; txHash: string }> {
     const authHeaders: Record<string, string> = apiKey
@@ -600,8 +619,8 @@ export class MarketZapAPI {
       : {};
     return this.request<{ market: Market; txHash: string }>(
       "POST",
-      "/admin/resolve-market",
-      { marketId, winningOutcome },
+      "/admin/finalize-resolution",
+      { marketId },
       undefined,
       authHeaders,
     );

@@ -113,8 +113,8 @@ describe("settleTrade", () => {
       expect.objectContaining({ trader: mockTrade.takerOrder.trader, is_buy: true }),
       // fill_amount as BigInt (starknet.js 7.x handles u256 encoding)
       BigInt(mockTrade.fillAmount),
-      // maker_sig_r, maker_sig_s, taker_sig_r, taker_sig_s
-      "0", "0", "0", "0",
+      // maker_signature and taker_signature as full arrays
+      ["0", "0"], ["0", "0"],
     ]);
   });
 
@@ -155,7 +155,7 @@ describe("reserveBalance", () => {
     mockInvoke.mockResolvedValue({ transaction_hash: "0xreserve-tx" });
     mockWaitForTransaction.mockResolvedValue({});
 
-    const result = await settler.reserveBalance("0xuser", "0xtoken", "1000", 3600);
+    const result = await settler.reserveBalance("0xuser", "0xtoken", "1000", 3600, "1");
 
     expect(result.success).toBe(true);
     expect(result.txHash).toBe("0xreserve-tx");
@@ -164,7 +164,7 @@ describe("reserveBalance", () => {
   it("returns failure on error", async () => {
     mockInvoke.mockRejectedValue(new Error("Insufficient balance on chain"));
 
-    const result = await settler.reserveBalance("0xuser", "0xtoken", "1000", 3600);
+    const result = await settler.reserveBalance("0xuser", "0xtoken", "1000", 3600, "1");
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Insufficient balance");
@@ -286,8 +286,8 @@ describe("settleAmmTradeAtomic", () => {
     expect(result.txHash).toBe("0xsplit-tx");
     expect(mockExecute).toHaveBeenCalledTimes(1);
     const calls = mockExecute.mock.calls[0][0];
-    // Should have 4 calls: reserve_balance + approve + split_position + settle_trade
-    expect(calls.length).toBe(4);
+    // Should have 5 calls: reserve_balance + approve + split_position + set_approval_for_all + settle_trade
+    expect(calls.length).toBe(5);
   });
 
   it("withdraws from exchange when wallet USDC is insufficient for split", async () => {
@@ -309,8 +309,8 @@ describe("settleAmmTradeAtomic", () => {
     expect(result.success).toBe(true);
     expect(mockExecute).toHaveBeenCalledTimes(1);
     const calls = mockExecute.mock.calls[0][0];
-    // Should have 5 calls: reserve + withdraw + approve + split + settle
-    expect(calls.length).toBe(5);
+    // Should have 6 calls: reserve + withdraw + approve + split + set_approval_for_all + settle
+    expect(calls.length).toBe(6);
   });
 
   it("returns solvency error when admin has no USDC anywhere", async () => {

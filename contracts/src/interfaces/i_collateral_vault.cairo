@@ -10,13 +10,14 @@ pub trait ICollateralVault<TContractState> {
     /// `condition_id`.  Uses actual-received accounting
     /// (balanceAfter - balanceBefore) to handle fee-on-transfer tokens.
     /// Only callable by the ConditionalTokens contract.
+    /// C-3 fix: returns actual_received for callers to use.
     fn deposit(
         ref self: TContractState,
         token: ContractAddress,
         condition_id: felt252,
         from: ContractAddress,
         amount: u256,
-    );
+    ) -> u256;
 
     /// Withdraw `amount` of `token` from the vault for `condition_id`,
     /// sending funds to `to`.

@@ -12,21 +12,22 @@
  *           --delay <ms>  (between txs, default 3000)
  */
 import { RpcProvider, Account, CallData, Contract, hash } from "starknet";
+import { execFileSync } from "node:child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import { loadPrivateKey, loadAdminAddress } from "./lib/keystore.mjs";
-import {
-  writeDeployedAddresses,
-  readExistingAddresses,
-} from "./addresses/write-addresses.mjs";
+import { writeDeployedAddresses, readExistingAddresses } from "./addresses/write-addresses.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
-// ---------------------------------------------------------------------------
-// CLI argument parsing
-// ---------------------------------------------------------------------------
+// Load engine .env first (has ADMIN_ADDRESS), then root .env (has keystore config).
+// dotenv won't overwrite already-set keys, so engine values take precedence.
+dotenv.config({ path: path.resolve(__dirname, "../services/engine/.env") });
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
 const args = process.argv.slice(2);
 function flag(name) {
   return args.includes(`--${name}`);
@@ -35,6 +36,10 @@ function opt(name, fallback) {
   const i = args.indexOf(`--${name}`);
   return i !== -1 && args[i + 1] ? args[i + 1] : fallback;
 }
+const errorMessage = (error, max = Infinity) =>
+  (error instanceof Error ? error.message : String(error)).slice(0, max);
+const isAlreadyDeclaredError = (message) =>
+  message.includes("CLASS_ALREADY_DECLARED") || message.includes("AlreadyDeclared");
 
 const NETWORK = opt("network", "sepolia");
 const DELAY = Number(opt("delay", "3000"));
@@ -52,9 +57,6 @@ if (!RPC_URL) {
   process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Contract artifact mapping
-// ---------------------------------------------------------------------------
 const ARTIFACTS = {
   MockERC20: "market_zap_MockERC20",
   CollateralVault: "market_zap_CollateralVault",
@@ -64,9 +66,6 @@ const ARTIFACTS = {
   AdminResolver: "market_zap_AdminResolver",
 };
 
-// ---------------------------------------------------------------------------
-// Provider + account
-// ---------------------------------------------------------------------------
 const PRIVATE_KEY = loadPrivateKey();
 const ADMIN_ADDRESS = loadAdminAddress();
 const provider = new RpcProvider({ nodeUrl: RPC_URL });
@@ -124,9 +123,9 @@ async function declare(name) {
     await provider.waitForTransaction(resp.transaction_hash);
     return resp.class_hash;
   } catch (err) {
-    const msg = err.message || "";
+    const msg = errorMessage(err);
 
-    if (msg.includes("CLASS_ALREADY_DECLARED") || msg.includes("AlreadyDeclared")) {
+    if (isAlreadyDeclaredError(msg)) {
       const h = extractClassAlreadyDeclaredHash(msg) || classHash;
       console.log(`    Already declared: ${h.slice(0, 18)}...`);
       return h;
@@ -151,8 +150,8 @@ async function declare(name) {
       await provider.waitForTransaction(resp2.transaction_hash);
       return resp2.class_hash;
     } catch (err2) {
-      const msg2 = err2.message || "";
-      if (msg2.includes("CLASS_ALREADY_DECLARED") || msg2.includes("AlreadyDeclared")) {
+      const msg2 = errorMessage(err2);
+      if (isAlreadyDeclaredError(msg2)) {
         const h = extractClassAlreadyDeclaredHash(msg2) || classHash;
         console.log(`    Already declared on retry: ${h.slice(0, 18)}...`);
         return h;
@@ -199,7 +198,12 @@ async function verify(addresses) {
   let ok = true;
 
   const check = (label, actual, expected) => {
-    const norm = (a) => "0x" + a.replace(/^0x0*/, "").toLowerCase();
+    const norm = (a) => {
+      const s = String(a);
+      // Handle BigInt decimal returned by starknet.js
+      if (/^\d+$/.test(s)) return "0x" + BigInt(s).toString(16);
+      return "0x" + s.replace(/^0x0*/, "").toLowerCase();
+    };
     if (norm(actual) === norm(expected)) {
       console.log(`  [PASS] ${label}`);
     } else {
@@ -214,50 +218,14 @@ async function verify(addresses) {
   const abiDir = path.join(PROJECT_ROOT, "packages/shared/src/abis");
   const loadAbi = (name) => JSON.parse(fs.readFileSync(path.join(abiDir, `${name}.json`), "utf-8"));
 
-  // 1. Factory -> Exchange
-  try {
-    const factory = new Contract(loadAbi("MarketFactory"), addresses.MarketFactory, provider);
-    const exchangeOnChain = await factory.get_clob_exchange();
-    check("Factory -> Exchange", String(exchangeOnChain), addresses.CLOBExchange);
-  } catch (e) {
-    console.log(`  [FAIL] Factory -> Exchange: ${e.message?.slice(0, 100)}`);
-    ok = false;
-  }
+  // Helper: create Contract with starknet.js v9 object syntax
+  const makeContract = (name, address) =>
+    new Contract({ abi: loadAbi(name), address, providerOrAccount: provider });
 
-  // 2. Factory -> ConditionalTokens
+  // 1. Vault: USDC is a supported token
   try {
-    const factory = new Contract(loadAbi("MarketFactory"), addresses.MarketFactory, provider);
-    const ctOnChain = await factory.get_conditional_tokens();
-    check("Factory -> ConditionalTokens", String(ctOnChain), addresses.ConditionalTokens);
-  } catch (e) {
-    console.log(`  [FAIL] Factory -> CT: ${e.message?.slice(0, 100)}`);
-    ok = false;
-  }
-
-  // 3. Exchange -> Factory
-  try {
-    const exchange = new Contract(loadAbi("CLOBExchange"), addresses.CLOBExchange, provider);
-    const factoryOnChain = await exchange.get_market_factory();
-    check("Exchange -> Factory", String(factoryOnChain), addresses.MarketFactory);
-  } catch (e) {
-    console.log(`  [FAIL] Exchange -> Factory: ${e.message?.slice(0, 100)}`);
-    ok = false;
-  }
-
-  // 4. Vault -> ConditionalTokens
-  try {
-    const vault = new Contract(loadAbi("CollateralVault"), addresses.CollateralVault, provider);
-    const ctOnChain = await vault.get_conditional_tokens();
-    check("Vault -> ConditionalTokens", String(ctOnChain), addresses.ConditionalTokens);
-  } catch (e) {
-    console.log(`  [FAIL] Vault -> CT: ${e.message?.slice(0, 100)}`);
-    ok = false;
-  }
-
-  // 5. Check USDC is a supported token in vault
-  try {
-    const vault = new Contract(loadAbi("CollateralVault"), addresses.CollateralVault, provider);
-    const supported = await vault.is_supported_token(addresses.USDC);
+    const vault = makeContract("CollateralVault", addresses.CollateralVault);
+    const supported = await vault.is_supported(addresses.USDC);
     if (supported) {
       console.log(`  [PASS] Vault supports USDC`);
     } else {
@@ -265,11 +233,140 @@ async function verify(addresses) {
       ok = false;
     }
   } catch (e) {
-    console.log(`  [WARN] Could not check vault USDC support: ${e.message?.slice(0, 100)}`);
+    console.log(`  [FAIL] Vault USDC check: ${errorMessage(e, 100)}`);
+    ok = false;
+  }
+
+  // 2. Vault: owner is admin
+  try {
+    const vault = makeContract("CollateralVault", addresses.CollateralVault);
+    const ownerOnChain = await vault.owner();
+    check("Vault owner", String(ownerOnChain), ADMIN_ADDRESS);
+  } catch (e) {
+    console.log(`  [FAIL] Vault owner: ${errorMessage(e, 100)}`);
+    ok = false;
+  }
+
+  // 3. Exchange: owner is admin
+  try {
+    const exchange = makeContract("CLOBExchange", addresses.CLOBExchange);
+    const ownerOnChain = await exchange.owner();
+    check("Exchange owner", String(ownerOnChain), ADMIN_ADDRESS);
+  } catch (e) {
+    console.log(`  [FAIL] Exchange owner: ${errorMessage(e, 100)}`);
+    ok = false;
+  }
+
+  // 4. Exchange: not paused
+  try {
+    const exchange = makeContract("CLOBExchange", addresses.CLOBExchange);
+    const paused = await exchange.is_paused();
+    if (!paused) {
+      console.log(`  [PASS] Exchange is not paused`);
+    } else {
+      console.log(`  [FAIL] Exchange is paused`);
+      ok = false;
+    }
+  } catch (e) {
+    console.log(`  [WARN] Exchange pause check: ${errorMessage(e, 100)}`);
+  }
+
+  // 5. Resolver: admin is correct
+  try {
+    const resolver = makeContract("AdminResolver", addresses.AdminResolver);
+    const adminOnChain = await resolver.get_admin();
+    check("Resolver admin", String(adminOnChain), ADMIN_ADDRESS);
+  } catch (e) {
+    console.log(`  [FAIL] Resolver admin: ${errorMessage(e, 100)}`);
+    ok = false;
+  }
+
+  // 6. Resolver: default dispute period is 86400 (24h)
+  try {
+    const resolver = makeContract("AdminResolver", addresses.AdminResolver);
+    const period = await resolver.get_dispute_period();
+    if (Number(period) === 86400) {
+      console.log(`  [PASS] Resolver dispute period = 86400`);
+    } else {
+      console.log(`  [FAIL] Resolver dispute period = ${period} (expected 86400)`);
+      ok = false;
+    }
+  } catch (e) {
+    console.log(`  [FAIL] Resolver dispute period: ${errorMessage(e, 100)}`);
+    ok = false;
+  }
+
+  // 7. Verify all contract class hashes are deployed (non-zero code)
+  for (const [name, addr] of Object.entries(addresses)) {
+    try {
+      const classHash = await provider.getClassHashAt(addr);
+      if (classHash && classHash !== "0x0") {
+        console.log(`  [PASS] ${name} deployed (class=${classHash.slice(0, 18)}...)`);
+      } else {
+        console.log(`  [FAIL] ${name} has no code at ${addr}`);
+        ok = false;
+      }
+    } catch (e) {
+      console.log(`  [FAIL] ${name} not found: ${errorMessage(e, 80)}`);
+      ok = false;
+    }
   }
 
   console.log(ok ? "\n  All checks passed!" : "\n  Some checks FAILED.");
   return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Voyager source verification via sncast
+// ---------------------------------------------------------------------------
+const CONTRACT_NAMES_FOR_ADDRESSES = {
+  USDC: "MockERC20",
+  CollateralVault: "CollateralVault",
+  ConditionalTokens: "ConditionalTokens",
+  MarketFactory: "MarketFactory",
+  CLOBExchange: "CLOBExchange",
+  AdminResolver: "AdminResolver",
+};
+
+async function verifyOnVoyager(addresses) {
+  const contractsDir = path.join(PROJECT_ROOT, "contracts");
+
+  for (const [key, contractName] of Object.entries(CONTRACT_NAMES_FOR_ADDRESSES)) {
+    const addr = addresses[key];
+    if (!addr) continue;
+
+    console.log(`  Verifying ${contractName} (${key})...`);
+    try {
+      const out = execFileSync("sncast", [
+        "verify",
+        "--contract-address", addr,
+        "--contract-name", contractName,
+        "--verifier", "voyager",
+        "--network", NETWORK,
+        "--confirm-verification",
+      ], {
+        cwd: contractsDir,
+        encoding: "utf8",
+        timeout: 120_000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      if (out.includes("already verified")) {
+        console.log(`    Already verified`);
+      } else {
+        console.log(`    Submitted`);
+      }
+    } catch (e) {
+      const msg = e.stderr || e.stdout || e.message || "";
+      if (msg.includes("already verified")) {
+        console.log(`    Already verified`);
+      } else {
+        console.log(`    Error: ${msg.slice(0, 150)}`);
+      }
+    }
+    await sleep(2000); // Rate limit
+  }
+
+  console.log("\n  Voyager verification jobs submitted. Check status on voyager.online.");
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +449,13 @@ async function fullDeploy() {
   console.log("\nPhase 4: Saving addresses\n");
   writeDeployedAddresses(NETWORK, addresses);
 
-  // Phase 5: Verify
+  // Phase 5: Verify on-chain wiring
   console.log("");
   await verify(addresses);
+
+  // Phase 6: Verify source code on Voyager
+  console.log("\nPhase 6: Voyager source verification\n");
+  await verifyOnVoyager(addresses);
 
   console.log("\n========================================");
   console.log("  DEPLOYMENT COMPLETE");
@@ -391,7 +492,7 @@ async function redeployExchange() {
   try {
     await invoke(existing.MarketFactory, "set_clob_exchange", [exchange], "Factory -> Exchange");
   } catch (e) {
-    console.log(`  set_clob_exchange failed (likely already set): ${e.message?.slice(0, 200)}`);
+    console.log(`  set_clob_exchange failed (likely already set): ${errorMessage(e, 200)}`);
     console.log(`  NOTE: Factory must be redeployed if exchange address needs updating.`);
   }
 
@@ -486,6 +587,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("\nFATAL:", e.message?.slice(0, 500) || e);
+  console.error("\nFATAL:", errorMessage(e, 500));
   process.exit(1);
 });

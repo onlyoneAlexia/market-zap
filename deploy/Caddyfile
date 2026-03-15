@@ -1,0 +1,24 @@
+# MarketZap Engine — auto-SSL reverse proxy
+# Caddy automatically obtains and renews Let's Encrypt certificates.
+
+api.marketzap.app {
+	# Proxy all traffic to the engine container
+	reverse_proxy engine:3001
+
+	# Enable compression
+	encode gzip zstd
+
+	# Security headers
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Access logging
+	log {
+		output stdout
+		format json
+	}
+}

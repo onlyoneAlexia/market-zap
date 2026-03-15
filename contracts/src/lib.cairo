@@ -29,4 +29,6 @@ pub mod mocks {
     pub mod mock_erc20;
     pub mod mock_market_factory;
     pub mod mock_erc1155;
+    pub mod mock_account;
+    pub mod mock_bad_account;
 }

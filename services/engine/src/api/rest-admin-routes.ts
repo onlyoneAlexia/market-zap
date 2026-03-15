@@ -6,28 +6,36 @@ import type { RestRouteContext } from "./rest-types.js";
 const STARKNET_RPC_URLS: string[] = (() => {
   const env = process.env.STARKNET_RPC_URL;
   const defaults = [
+    "https://rpc.starknet-testnet.lava.build",
     "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_8/demo",
     "https://starknet-sepolia.drpc.org",
-    "https://rpc.starknet-testnet.lava.build",
     "https://api.zan.top/public/starknet-sepolia/rpc/v0_8",
   ];
   return env ? [env, ...defaults.filter((url) => url !== env)] : defaults;
 })();
 
+function manualMarketSeedingEnabled(): boolean {
+  return (
+    process.env.ENABLE_MANUAL_MARKET_SEEDING === "true" ||
+    process.env.NODE_ENV !== "production"
+  );
+}
+
 export function registerAdminRoutes(
   router: Router,
   context: RestRouteContext,
 ): void {
+  // Phase 1: Propose outcome — returns immediately after on-chain proposal
   router.post(
-    "/api/admin/resolve-market",
+    "/api/admin/propose-resolution",
     requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
-      const ResolveSchema = z.object({
+      const ProposeSchema = z.object({
         marketId: z.string().min(1),
         winningOutcome: z.number().int().min(0),
       });
 
-      const parsed = ResolveSchema.safeParse(req.body);
+      const parsed = ProposeSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.flatten() });
         return;
@@ -62,25 +70,146 @@ export function registerAdminRoutes(
         return;
       }
 
-      const result = await context.deps.settler.resolveMarket(
+      const result = await context.deps.settler.proposeResolution(
         market.on_chain_market_id,
         market.condition_id,
         winningOutcome,
       );
       if (!result.success) {
+        // Recovery: if on-chain proposal already exists (e.g. previous attempt
+        // succeeded on-chain but DB update was missed), sync DB and return success.
+        const isAlreadyProposed =
+          result.error?.includes("already proposed") ||
+          result.error?.includes("ALREADY_PROPOSED");
+        if (isAlreadyProposed) {
+          const onChain = await context.deps.settler.getOnChainProposal(
+            market.condition_id,
+          );
+          if (onChain && onChain.status >= 1) {
+            console.log(
+              `[admin] recovering: on-chain proposal exists for ${market.condition_id}, syncing DB`,
+            );
+            await context.deps.db.updateMarketStatus(
+              market.market_id,
+              onChain.status === 2 ? "RESOLVED" : "PROPOSED",
+              onChain.proposedOutcome,
+            );
+            const disputePeriod = onChain.disputePeriod || 3600;
+            const finalizeAfterMs =
+              (onChain.proposedAt + disputePeriod) * 1000;
+            ok(res, {
+              market: formatMarket({
+                ...market,
+                status: onChain.status === 2 ? "RESOLVED" : "PROPOSED",
+                winning_outcome: onChain.proposedOutcome,
+              }),
+              proposalTxHash: "(recovered from on-chain state)",
+              disputePeriodSeconds: disputePeriod,
+              finalizeAfter: new Date(finalizeAfterMs).toISOString(),
+            });
+            return;
+          }
+        }
         res.status(500).json({ error: result.error });
         return;
       }
 
       await context.deps.db.updateMarketStatus(
         market.market_id,
-        "RESOLVED",
+        "PROPOSED",
         winningOutcome,
       );
-      context.deps.ws.broadcast(`market:${market.id}`, {
+
+      ok(res, {
+        market: formatMarket({
+          ...market,
+          status: "PROPOSED",
+          winning_outcome: winningOutcome,
+        }),
+        proposalTxHash: result.txHash,
+        disputePeriodSeconds: 3600,
+        finalizeAfter: new Date(Date.now() + 3600 * 1000).toISOString(),
+      });
+    }),
+  );
+
+  // Phase 2: Finalize resolution — call after dispute period has elapsed
+  router.post(
+    "/api/admin/finalize-resolution",
+    requireAuth,
+    asyncHandler(async (req: Request, res: Response) => {
+      const FinalizeSchema = z.object({
+        marketId: z.string().min(1),
+      });
+
+      const parsed = FinalizeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+      }
+
+      const { marketId } = parsed.data;
+      const market = await context.deps.db.getMarketById(marketId);
+      if (!market) {
+        res.status(404).json({ error: "Market not found" });
+        return;
+      }
+      if (market.status === "RESOLVED") {
+        res.status(400).json({ error: "Market already resolved" });
+        return;
+      }
+      if (market.status !== "PROPOSED") {
+        res.status(400).json({ error: "Market resolution not yet proposed. Call /api/admin/propose-resolution first." });
+        return;
+      }
+      if (!market.condition_id || !market.on_chain_market_id) {
+        res.status(400).json({ error: "Market missing condition_id or on_chain_market_id" });
+        return;
+      }
+
+      const result = await context.deps.settler.finalizeResolution(
+        market.on_chain_market_id,
+        market.condition_id,
+      );
+      if (!result.success) {
+        // Recovery: if already finalized on-chain, sync DB
+        const isAlreadyFinalized =
+          result.error?.includes("already finalized") ||
+          result.error?.includes("ALREADY_FINALIZED") ||
+          result.error?.includes("no active proposal");
+        if (isAlreadyFinalized) {
+          const onChain = await context.deps.settler.getOnChainProposal(
+            market.condition_id,
+          );
+          if (onChain && onChain.status === 2) {
+            console.log(
+              `[admin] recovering: on-chain resolution already finalized for ${market.condition_id}, syncing DB`,
+            );
+            await context.deps.db.updateMarketStatus(
+              market.market_id,
+              "RESOLVED",
+              onChain.proposedOutcome,
+            );
+            // Continue to the success path below
+          } else {
+            res.status(500).json({ error: result.error });
+            return;
+          }
+        } else {
+          res.status(500).json({ error: result.error });
+          return;
+        }
+      }
+
+      await context.deps.db.updateMarketStatus(
+        market.market_id,
+        "RESOLVED",
+        market.winning_outcome ?? 0,
+      );
+      context.deps.ws.broadcast(`market:${market.market_id}`, {
         type: "market_resolved",
-        marketId: market.id,
-        winningOutcome,
+        marketId: market.market_id,
+        winningOutcome: market.winning_outcome ?? 0,
         txHash: result.txHash,
       });
 
@@ -88,7 +217,6 @@ export function registerAdminRoutes(
         market: formatMarket({
           ...market,
           status: "RESOLVED",
-          winning_outcome: winningOutcome,
         }),
         txHash: result.txHash,
       });
@@ -100,6 +228,11 @@ export function registerAdminRoutes(
     context.createMarketLimiter,
     requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
+      if (!manualMarketSeedingEnabled()) {
+        res.status(403).json({ error: "Manual market seeding is disabled" });
+        return;
+      }
+
       const SeedMarketSchema = z.object({
         marketId: z.string().min(1),
         onChainMarketId: z.string().optional(),
@@ -108,12 +241,13 @@ export function registerAdminRoutes(
         description: z.string().default(""),
         category: z.string().default("general"),
         outcomeCount: z.number().int().min(2).max(8),
-        outcomeLabels: z.array(z.string()).min(2),
+        outcomeLabels: z.array(z.string()).min(2).max(8),
         collateralToken: z.string().min(1),
         resolutionSource: z.string().default(""),
         resolutionTime: z.string().optional(),
         ammB: z.number().min(10).max(10000).optional(),
         marketType: z.enum(["public", "private"]).optional().default("public"),
+        thumbnailUrl: z.string().url().optional(),
       });
 
       const parsed = SeedMarketSchema.safeParse(req.body);
@@ -136,11 +270,11 @@ export function registerAdminRoutes(
         resolutionSource: data.resolutionSource,
         resolutionTime: data.resolutionTime ? new Date(data.resolutionTime) : undefined,
         marketType: data.marketType,
+        thumbnailUrl: data.thumbnailUrl,
       });
 
       const marketId = market.market_id;
       const seedLockKey = `seed-lock:${marketId}`;
-      let seedTxHash: string | null = null;
 
       let lockToken: string | null = null;
       if (context.deps.redis) {
@@ -159,39 +293,16 @@ export function registerAdminRoutes(
       try {
         const existingState = (await context.deps.ammState.mgetStates([marketId])).get(marketId);
         if (!existingState) {
-          const inventory = 500_000_000n;
-          let liquidityConfirmed = false;
-
-          if (data.conditionId) {
-            const setupResult = await context.deps.settler.setupSeedLiquidity({
-              conditionId: data.conditionId,
-              collateralToken: data.collateralToken,
-              splitAmount: inventory,
-              depositAmount: inventory,
-            });
-
-            if (setupResult.success) {
-              seedTxHash = setupResult.txHash;
-              liquidityConfirmed = true;
-              console.log(`[seed-market] on-chain liquidity setup confirmed: ${seedTxHash}`);
-            } else {
-              console.warn(
-                `[seed-market] on-chain liquidity setup failed: ${setupResult.error}`,
-              );
-            }
-          }
-
-          if (liquidityConfirmed) {
-            await context.deps.ammState.initPool(
-              marketId,
-              data.ammB ?? 500,
-              data.outcomeCount,
-            );
-          } else {
-            console.warn(
-              `[seed-market] Skipping AMM pool init — no confirmed on-chain backing`,
-            );
-          }
+          // AMM pool is virtual LMSR liquidity — always initialize it so
+          // early traders see prices and can place bets immediately.
+          // On-chain backing (split + deposit) is only needed at settlement
+          // time and is handled lazily by the settler.
+          await context.deps.ammState.initPool(
+            marketId,
+            data.ammB ?? 500,
+            data.outcomeCount,
+          );
+          console.log(`[seed-market] AMM pool initialized for ${marketId} (b=${data.ammB ?? 500}, outcomes=${data.outcomeCount})`);
         }
       } finally {
         if (context.deps.redis && lockToken) {
@@ -217,7 +328,7 @@ export function registerAdminRoutes(
         }
       }
 
-      ok(res, { market, seedTxHash, ammReady: seedTxHash !== null }, 201);
+      ok(res, { market, ammReady: true }, 201);
     }),
   );
 
@@ -245,9 +356,12 @@ export function registerAdminRoutes(
           if (data.error) {
             const code = typeof data.error.code === "number" ? data.error.code : null;
             const message: string = data.error.message ?? "";
+            // Starknet-specific codes that mean the request itself is invalid
+            // (not an endpoint issue). Excludes -32601 because many providers
+            // return it for valid methods they don't support at a given version.
             const definitiveCodes = new Set([
               20, 24, 25, 27, 28, 29, 31, 40, 41, 51,
-              -32600, -32601, -32602, -32700,
+              -32600, -32602, -32700,
             ]);
 
             if (code !== null && definitiveCodes.has(code)) {

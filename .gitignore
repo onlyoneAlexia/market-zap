@@ -19,6 +19,7 @@ build/
 # Environment
 .env
 .env.local
+deploy/.env
 .env.development.local
 .env.test.local
 .env.production.local
@@ -57,6 +58,12 @@ next-env.d.ts
 
 # Debug screenshots
 services/engine/tmp/
+
+# Dev logs
+.dev-logs/
+
+# Dev artifact screenshots
+.artifacts-*.png
 
 # Expo
 apps/mobile/.expo/

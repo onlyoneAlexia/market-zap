@@ -41,8 +41,17 @@ export function signSeedOrder(
   return formatSignature(signature);
 }
 
-export function parseSignature(_signature: string): [string, string] {
-  return ["0", "0"];
+/**
+ * Parse a comma-separated signature string into individual felt252 parts.
+ * Supports all account types: OZ [r,s], Braavos [type,r,s],
+ * Cartridge session keys [session-typed-data, ...many fields].
+ * The on-chain settle_trade now accepts Span<felt252> so we pass all parts.
+ */
+export function parseSignature(signature: string): string[] {
+  if (!signature || signature === "0x0,0x0") return ["0", "0"];
+  const parts = signature.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return ["0", "0"];
+  return parts;
 }
 
 export function getExecutionStatus(receipt: unknown): string | undefined {

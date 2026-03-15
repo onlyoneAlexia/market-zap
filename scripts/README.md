@@ -31,6 +31,7 @@ node scripts/deploy.mjs --verify
 - `npm run script:tx:inspect -- <txHash>`
 - `npm run script:markets:seed`
 - `npm run script:markets:reseed`
+- `scripts/qa/claude-plan-validate.sh plan.md`
 - `npm run script:qa:create-and-buy`
 - `npm run script:qa:seed-and-buy`
 - `npm run script:qa:test-buy`

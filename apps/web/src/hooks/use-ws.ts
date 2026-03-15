@@ -276,9 +276,10 @@ export function useGlobalWebSocket() {
             queryClient.invalidateQueries({ queryKey: ["liquidity"] });
 
             if (isWalletParticipant(buyer, seller)) {
-              // Only participants need balance/portfolio refresh + destructive toast.
+              // Only participants need balance/portfolio/orders refresh + destructive toast.
               queryClient.invalidateQueries({ queryKey: ["balance"] });
               queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+              queryClient.invalidateQueries({ queryKey: ["orders"] });
               toastRef.current({
                 title: "Settlement failed",
                 description: friendlySettlementError(
@@ -288,6 +289,14 @@ export function useGlobalWebSocket() {
                 duration: 10000,
               });
             }
+          } else if (
+            typeof data === "object" &&
+            data !== null &&
+            "type" in data &&
+            (data as { type: unknown }).type === "order_cancelled"
+          ) {
+            // Settlement rollback cancelled an order — refresh open orders list.
+            queryClient.invalidateQueries({ queryKey: ["orders"] });
           }
         }
       } catch {

@@ -41,6 +41,24 @@ describe("GET /api/health", () => {
   });
 });
 
+describe("GET /api/ready", () => {
+  it("returns ready when dependencies are healthy", async () => {
+    const res = await harness.req("GET", "/api/ready");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("ready");
+    expect(res.body.checks.database).toBe("ok");
+  });
+
+  it("returns degraded when the database health check fails", async () => {
+    (harness.deps.db.healthCheck as any).mockResolvedValue(false);
+
+    const res = await harness.req("GET", "/api/ready");
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe("degraded");
+    expect(res.body.checks.database).toBe("error");
+  });
+});
+
 describe("POST /api/telemetry/wallet", () => {
   it("accepts valid wallet funnel telemetry", async () => {
     const res = await harness.req("POST", "/api/telemetry/wallet", {
@@ -127,6 +145,7 @@ describe("GET /api/markets", () => {
         status: "ACTIVE",
         total_volume: "5000",
         created_at: "2025-01-01T00:00:00Z",
+        thumbnail_url: "https://example.com/btc.png",
       },
     ]);
 
@@ -134,6 +153,28 @@ describe("GET /api/markets", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.items[0].question).toBe("Will BTC hit 100k?");
     expect(res.body.data.items[0].outcomes).toHaveLength(2);
+    expect(res.body.data.items[0].thumbnailUrl).toBe("https://example.com/btc.png");
+  });
+
+  it("returns null thumbnailUrl when not set", async () => {
+    (harness.deps.db.getMarkets as any).mockResolvedValue([
+      {
+        market_id: "0xm2",
+        id: "0xm2",
+        title: "Will ETH flip BTC?",
+        category: "crypto",
+        outcome_count: 2,
+        outcome_labels: ["Yes", "No"],
+        collateral_token: "0xusdc",
+        status: "ACTIVE",
+        total_volume: "0",
+        created_at: "2025-01-01T00:00:00Z",
+      },
+    ]);
+
+    const res = await harness.req("GET", "/api/markets");
+    expect(res.status).toBe(200);
+    expect(res.body.data.items[0].thumbnailUrl).toBeNull();
   });
 });
 
@@ -211,8 +252,21 @@ describe("GET /api/leaderboard", () => {
   });
 });
 
-describe("POST /api/admin/resolve-market", () => {
-  it("rejects resolving before market resolution time", async () => {
+describe("POST /api/admin/propose-resolution", () => {
+  it("requires an API key when one is configured", async () => {
+    vi.stubEnv("ENGINE_API_KEY", "test-key");
+
+    const res = await harness.req("POST", "/api/admin/propose-resolution", {
+      marketId: "m1",
+      winningOutcome: 0,
+    });
+
+    expect(res.status).toBe(401);
+
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects proposing before market resolution time", async () => {
     (harness.deps.db.getMarketById as any).mockResolvedValue({
       id: "m1",
       market_id: "m1",
@@ -222,13 +276,37 @@ describe("POST /api/admin/resolve-market", () => {
       resolution_time: "2100-01-01T00:00:00.000Z",
     });
 
-    const res = await harness.req("POST", "/api/admin/resolve-market", {
-      marketId: "m1",
-      winningOutcome: 0,
-    });
+    const res = await harness.req(
+      "POST",
+      "/api/admin/propose-resolution",
+      {
+        marketId: "m1",
+        winningOutcome: 0,
+      },
+      { authorization: "Bearer test-key" },
+    );
 
     expect(res.status).toBe(400);
     expect((res.body.error as string).toLowerCase()).toContain("cannot be resolved yet");
+  });
+});
+
+describe("POST /api/admin/finalize-resolution", () => {
+  it("rejects finalizing if not yet proposed", async () => {
+    (harness.deps.db.getMarketById as any).mockResolvedValue({
+      id: "m1",
+      market_id: "m1",
+      status: "ACTIVE",
+      condition_id: "0xcond",
+      on_chain_market_id: "1",
+    });
+
+    const res = await harness.req("POST", "/api/admin/finalize-resolution", {
+      marketId: "m1",
+    });
+
+    expect(res.status).toBe(400);
+    expect((res.body.error as string).toLowerCase()).toContain("not yet proposed");
   });
 });
 
@@ -251,6 +329,17 @@ describe("errorHandler", () => {
       vi.fn(),
     );
     expect(mockRes.status).toHaveBeenCalledWith(400);
+  });
+});
+
+describe("GET /metrics", () => {
+  it("requires an API key when one is configured", async () => {
+    vi.stubEnv("ENGINE_API_KEY", "test-key");
+
+    const res = await harness.req("GET", "/metrics");
+    expect(res.status).toBe(401);
+
+    vi.unstubAllEnvs();
   });
 });
 
@@ -290,36 +379,28 @@ describe("GET /api/portfolio/:address/rewards", () => {
   });
 });
 
-describe("POST /api/portfolio/:address/claim", () => {
-  it("records a claim and returns success", async () => {
-    (harness.deps.db.getMarketById as any).mockResolvedValue({
-      id: "uuid-1",
-      market_id: "mkt-1",
-      on_chain_market_id: "1",
-      title: "Test market",
-      description: "",
-      category: "crypto",
-      outcome_count: 2,
-      outcome_labels: ["Yes", "No"],
-      collateral_token: "0xtoken",
-      resolution_source: "",
-      resolution_time: new Date("2025-01-01"),
-      status: "RESOLVED",
-      winning_outcome: 0,
-      total_volume: "1000000",
-      liquidity: "0",
-      created_at: new Date(),
-      updated_at: new Date(),
-      condition_id: "0xcondition",
-    });
+describe("POST /api/admin/seed-market", () => {
+  it("disables manual market seeding in production by default", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("ENGINE_API_KEY", "test-key");
 
-    const res = await harness.req("POST", "/api/portfolio/0xuser1/claim", {
-      marketId: "uuid-1",
-      outcomeIndex: 0,
-      txHash: "0xabc123",
-    });
-    expect(res.status).toBe(200);
-    expect(res.body.data.claimed).toBe(true);
+    const res = await harness.req(
+      "POST",
+      "/api/admin/seed-market",
+      {
+        marketId: "probe",
+        title: "Probe",
+        outcomeCount: 2,
+        outcomeLabels: ["Yes", "No"],
+        collateralToken: "0xtoken",
+      },
+      { authorization: "Bearer test-key" },
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("disabled");
+
+    vi.unstubAllEnvs();
   });
 });
 

@@ -26,6 +26,13 @@
         "inputs": [],
         "outputs": [],
         "state_mutability": "external"
+      },
+      {
+        "type": "function",
+        "name": "cancel_upgrade",
+        "inputs": [],
+        "outputs": [],
+        "state_mutability": "external"
       }
     ]
   },
@@ -564,6 +571,29 @@
   },
   {
     "type": "event",
+    "name": "market_zap::market_factory::MarketFactory::UpgradeProposed",
+    "kind": "struct",
+    "members": [
+      {
+        "name": "new_class_hash",
+        "type": "core::starknet::class_hash::ClassHash",
+        "kind": "data"
+      },
+      {
+        "name": "proposed_at",
+        "type": "core::integer::u64",
+        "kind": "data"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "market_zap::market_factory::MarketFactory::UpgradeCancelled",
+    "kind": "struct",
+    "members": []
+  },
+  {
+    "type": "event",
     "name": "market_zap::market_factory::MarketFactory::Event",
     "kind": "enum",
     "variants": [
@@ -595,6 +625,16 @@
       {
         "name": "VolumeIncremented",
         "type": "market_zap::market_factory::MarketFactory::VolumeIncremented",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeProposed",
+        "type": "market_zap::market_factory::MarketFactory::UpgradeProposed",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeCancelled",
+        "type": "market_zap::market_factory::MarketFactory::UpgradeCancelled",
         "kind": "nested"
       }
     ]

@@ -258,7 +258,7 @@ fn test_finalize_too_early() {
     resolver.propose_outcome(market_id, condition_id, 0);
 
     // Try to finalize immediately (dispute period hasn't elapsed)
-    resolver.finalize_resolution(condition_id);
+    resolver.finalize_resolution(market_id, condition_id);
 }
 
 #[test]
@@ -268,13 +268,13 @@ fn test_finalize_after_dispute_period() {
     let (condition_id, market_id) = prepare_condition_with_market(ct_addr, resolver_addr, factory_addr, 50);
 
     cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(2));
-    resolver.set_dispute_period(100);
+    resolver.set_dispute_period(3600); // L-2 fix: must be >= MIN_DISPUTE_PERIOD (1 hour)
     cheat_block_timestamp(resolver_addr, 100, CheatSpan::TargetCalls(1));
     resolver.propose_outcome(market_id, condition_id, 1);
 
-    // Fast-forward time past the dispute period
-    cheat_block_timestamp(resolver_addr, 300, CheatSpan::TargetCalls(1));
-    resolver.finalize_resolution(condition_id);
+    // Fast-forward time past the dispute period (100 + 3600 = 3700)
+    cheat_block_timestamp(resolver_addr, 3800, CheatSpan::TargetCalls(1));
+    resolver.finalize_resolution(market_id, condition_id);
 
     let proposal = resolver.get_proposal(condition_id);
     assert(proposal.status == ResolutionStatus::Finalized, 'should be finalized');
@@ -290,5 +290,194 @@ fn test_finalize_without_proposal() {
     let (_, resolver_addr, _, _) = setup();
     let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
 
-    resolver.finalize_resolution('nonexistent_condition');
+    resolver.finalize_resolution(999, 'nonexistent_condition');
+}
+
+// -----------------------------------------------------------------
+//  Tests: L-2 dispute period bounds
+// -----------------------------------------------------------------
+
+#[test]
+#[should_panic(expected: 'AR: period below minimum')]
+fn test_set_dispute_period_below_minimum() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_period(3599); // Below default 1-hour minimum
+}
+
+#[test]
+#[should_panic(expected: 'AR: period above maximum')]
+fn test_set_dispute_period_above_maximum() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    // 30 days = 2_592_000 seconds; try 2_592_001
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_period(2_592_001);
+}
+
+// -----------------------------------------------------------------
+//  Tests: Configurable dispute bounds
+// -----------------------------------------------------------------
+
+#[test]
+fn test_get_dispute_bounds_defaults() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+    let (min, max) = resolver.get_dispute_bounds();
+    assert(min == 3600, 'default min should be 1 hour');
+    assert(max == 2_592_000, 'default max should be 30 days');
+}
+
+#[test]
+fn test_set_dispute_bounds() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    // Lower min to 5 minutes (300s), keep max at 7 days
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_bounds(300, 604_800);
+
+    let (min, max) = resolver.get_dispute_bounds();
+    assert(min == 300, 'min should be 300');
+    assert(max == 604_800, 'max should be 7 days');
+
+    // Now we can set dispute period to 5 minutes
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_period(300);
+    assert(resolver.get_dispute_period() == 300, 'period should be 300');
+}
+
+#[test]
+#[should_panic(expected: 'AR: min below safety floor')]
+fn test_set_dispute_bounds_below_safety_floor() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    // Try to set min below 60s absolute floor
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_bounds(59, 3600);
+}
+
+#[test]
+#[should_panic(expected: 'AR: min exceeds max')]
+fn test_set_dispute_bounds_min_exceeds_max() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_bounds(7200, 3600); // min > max
+}
+
+#[test]
+#[should_panic(expected: 'AR: caller != admin')]
+fn test_set_dispute_bounds_not_admin() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    cheat_caller_address(resolver_addr, RANDOM(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_bounds(300, 604_800);
+}
+
+#[test]
+fn test_set_dispute_bounds_clamps_current_period() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    // Default period is 86400 (24h). Shrink max to 1h — period should clamp to 3600.
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.set_dispute_bounds(60, 3600);
+
+    assert(resolver.get_dispute_period() == 3600, 'period should clamp to new max');
+}
+
+#[test]
+fn test_set_dispute_bounds_then_period_respects_new_bounds() {
+    let (_, resolver_addr, _, _) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+
+    // Lower bounds to allow 5-minute dispute period
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(2));
+    resolver.set_dispute_bounds(300, 604_800);
+    resolver.set_dispute_period(300);
+
+    assert(resolver.get_dispute_period() == 300, 'should allow 5min period');
+}
+
+// -----------------------------------------------------------------
+//  Tests: M-1 finalize blocked on voided market
+// -----------------------------------------------------------------
+
+#[test]
+#[should_panic(expected: 'AR: market is voided')]
+fn test_finalize_blocked_on_voided_market() {
+    let (ct_addr, resolver_addr, _, factory_addr) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+    let factory = IMockMarketFactoryDispatcher { contract_address: factory_addr };
+    let (condition_id, market_id) = prepare_condition_with_market(ct_addr, resolver_addr, factory_addr, 50);
+
+    // Propose outcome (valid, after resolution_time)
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(2));
+    resolver.set_dispute_period(3600);
+    cheat_block_timestamp(resolver_addr, 100, CheatSpan::TargetCalls(1));
+    resolver.propose_outcome(market_id, condition_id, 0);
+
+    // Now void the market in the mock factory
+    let voided_market = Market {
+        market_id,
+        creator: USER(),
+        condition_id,
+        collateral_token: starknet::contract_address_const::<'usdc'>(),
+        question_hash: 0,
+        category: 'test',
+        outcome_count: 2,
+        created_at: 0,
+        resolution_time: 50,
+        bond_refunded: false,
+        voided: true, // <-- voided
+        volume: 0,
+        market_type: 0,
+    };
+    factory.set_market(voided_market);
+
+    // Try to finalize after dispute period — should panic because market is voided
+    cheat_block_timestamp(resolver_addr, 3800, CheatSpan::TargetCalls(1));
+    resolver.finalize_resolution(market_id, condition_id);
+}
+
+// -----------------------------------------------------------------
+//  Tests: M-1 propose blocked on voided market
+// -----------------------------------------------------------------
+
+#[test]
+#[should_panic(expected: 'AR: market is voided')]
+fn test_propose_blocked_on_voided_market() {
+    let (ct_addr, resolver_addr, _, factory_addr) = setup();
+    let resolver = IAdminResolverDispatcher { contract_address: resolver_addr };
+    let factory = IMockMarketFactoryDispatcher { contract_address: factory_addr };
+    let (condition_id, market_id) = prepare_condition_with_market(ct_addr, resolver_addr, factory_addr, 50);
+
+    // Void the market
+    let voided_market = Market {
+        market_id,
+        creator: USER(),
+        condition_id,
+        collateral_token: starknet::contract_address_const::<'usdc'>(),
+        question_hash: 0,
+        category: 'test',
+        outcome_count: 2,
+        created_at: 0,
+        resolution_time: 50,
+        bond_refunded: false,
+        voided: true,
+        volume: 0,
+        market_type: 0,
+    };
+    factory.set_market(voided_market);
+
+    cheat_block_timestamp(resolver_addr, 100, CheatSpan::TargetCalls(1));
+    cheat_caller_address(resolver_addr, ADMIN(), CheatSpan::TargetCalls(1));
+    resolver.propose_outcome(market_id, condition_id, 0); // Should panic
 }

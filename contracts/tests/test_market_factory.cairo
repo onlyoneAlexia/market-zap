@@ -9,6 +9,9 @@ use starknet::{ContractAddress, contract_address_const};
 use market_zap::interfaces::i_market_factory::{
     IMarketFactoryDispatcher, IMarketFactoryDispatcherTrait,
 };
+use market_zap::interfaces::i_conditional_tokens::{
+    IConditionalTokensDispatcher, IConditionalTokensDispatcherTrait,
+};
 use openzeppelin_interfaces::token::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
 use market_zap::mocks::mock_erc20::{IMockERC20Dispatcher, IMockERC20DispatcherTrait};
 
@@ -171,8 +174,9 @@ fn test_increment_volume_not_clob() {
 
 #[test]
 fn test_refund_bond_after_threshold() {
-    let (factory_addr, _, token_addr) = setup();
+    let (factory_addr, ct_addr, token_addr) = setup();
     let factory = IMarketFactoryDispatcher { contract_address: factory_addr };
+    let ct = IConditionalTokensDispatcher { contract_address: ct_addr };
     let erc20 = IERC20Dispatcher { contract_address: token_addr };
 
     let market_id = create_test_market(factory_addr, token_addr);
@@ -181,11 +185,18 @@ fn test_refund_bond_after_threshold() {
     cheat_caller_address(factory_addr, CLOB_EXCHANGE(), CheatSpan::TargetCalls(1));
     factory.increment_volume(market_id, 100_000_000);
 
+    // H-1 fix: market must be resolved before bond refund.
+    // Resolve the condition via report_payouts from the oracle.
+    let market = factory.get_market(market_id);
+    let payouts: Array<u256> = array![1, 0]; // outcome 0 wins
+    cheat_caller_address(ct_addr, ORACLE(), CheatSpan::TargetCalls(1));
+    ct.report_payouts(market.condition_id, payouts.span());
+
     // Refund bond
     factory.refund_bond(market_id);
 
-    let market = factory.get_market(market_id);
-    assert(market.bond_refunded, 'bond should be refunded');
+    let market_after = factory.get_market(market_id);
+    assert(market_after.bond_refunded, 'bond should be refunded');
 
     // Creator should have received their bond back
     assert(erc20.balance_of(CREATOR()) == 20_000_000, 'creator should get bond back');
@@ -206,13 +217,20 @@ fn test_refund_bond_below_threshold() {
 #[test]
 #[should_panic(expected: 'MF: bond already refunded')]
 fn test_refund_bond_twice() {
-    let (factory_addr, _, token_addr) = setup();
+    let (factory_addr, ct_addr, token_addr) = setup();
     let factory = IMarketFactoryDispatcher { contract_address: factory_addr };
+    let ct = IConditionalTokensDispatcher { contract_address: ct_addr };
 
     let market_id = create_test_market(factory_addr, token_addr);
 
     cheat_caller_address(factory_addr, CLOB_EXCHANGE(), CheatSpan::TargetCalls(1));
     factory.increment_volume(market_id, 100_000_000);
+
+    // H-1 fix: resolve condition first.
+    let market = factory.get_market(market_id);
+    let payouts: Array<u256> = array![1, 0];
+    cheat_caller_address(ct_addr, ORACLE(), CheatSpan::TargetCalls(1));
+    ct.report_payouts(market.condition_id, payouts.span());
 
     factory.refund_bond(market_id);
     factory.refund_bond(market_id); // Should panic
@@ -292,4 +310,51 @@ fn test_get_markets_paginated() {
     // Test pagination
     let page = factory.get_markets_paginated(1, 2);
     assert(page.len() == 2, 'should have 2 markets');
+}
+
+// -----------------------------------------------------------------
+//  Tests: H-1 refund_bond reverts when market not resolved
+// -----------------------------------------------------------------
+
+#[test]
+#[should_panic(expected: 'MF: market not resolved')]
+fn test_refund_bond_before_resolution() {
+    let (factory_addr, _, token_addr) = setup();
+    let factory = IMarketFactoryDispatcher { contract_address: factory_addr };
+
+    let market_id = create_test_market(factory_addr, token_addr);
+
+    // Increment volume past threshold but do NOT resolve the condition
+    cheat_caller_address(factory_addr, CLOB_EXCHANGE(), CheatSpan::TargetCalls(1));
+    factory.increment_volume(market_id, 100_000_000);
+
+    // Try to refund — should panic because condition is not resolved
+    factory.refund_bond(market_id);
+}
+
+// -----------------------------------------------------------------
+//  Tests: H-5 bond returned on void
+// -----------------------------------------------------------------
+
+#[test]
+fn test_void_market_returns_bond() {
+    let (factory_addr, _, token_addr) = setup();
+    let factory = IMarketFactoryDispatcher { contract_address: factory_addr };
+    let erc20 = IERC20Dispatcher { contract_address: token_addr };
+
+    let market_id = create_test_market(factory_addr, token_addr);
+
+    // Creator balance should be 0 (bond was taken)
+    assert(erc20.balance_of(CREATOR()) == 0, 'creator should have 0');
+
+    // Void the market after grace period
+    cheat_block_timestamp(factory_addr, 1_211_600, CheatSpan::TargetCalls(1));
+    factory.void_market(market_id);
+
+    let market = factory.get_market(market_id);
+    assert(market.voided, 'should be voided');
+    assert(market.bond_refunded, 'bond should be refunded on void');
+
+    // Creator should have received their bond back
+    assert(erc20.balance_of(CREATOR()) == 20_000_000, 'creator gets bond on void');
 }

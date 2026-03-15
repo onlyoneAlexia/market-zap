@@ -1,7 +1,7 @@
 "use client";
 
 function resolveEngineRpcProxy(): string {
-  const raw = process.env.NEXT_PUBLIC_ENGINE_URL || "http://localhost:3001/api";
+  const raw = process.env.NEXT_PUBLIC_ENGINE_URL || "/engine-api";
   const suffix = "/starknet-rpc";
   if (/^https?:\/\//.test(raw)) {
     return raw + suffix;

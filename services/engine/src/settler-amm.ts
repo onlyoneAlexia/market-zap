@@ -1,10 +1,11 @@
-import { Contract, type Account, type Call, type RpcProvider } from "starknet";
-import { ConditionalTokensABI, ERC20ABI, getContractAddress } from "@market-zap/shared";
+import { Contract, type Account, type Call, type RpcProvider, constants } from "starknet";
+import { ConditionalTokensABI, ERC20ABI, getContractAddress, computeOrderHash } from "@market-zap/shared";
 import type { Trade } from "./matcher.js";
 import type { SettlementResult } from "./settler.js";
 import {
   buildCairoOrder,
   getExecutionStatus,
+  getFinalityStatus,
   getRevertReason,
   parseSignature,
   scalePrice,
@@ -102,8 +103,44 @@ export async function settleAmmTradeAtomic(
 
     const makerOrder = buildCairoOrder(trade.makerOrder, onChainMarketId, tokenId);
     const takerOrder = buildCairoOrder(trade.takerOrder, onChainMarketId, tokenId);
-    const [makerSigR, makerSigS] = parseSignature(trade.makerOrder.signature);
-    const [takerSigR, takerSigS] = parseSignature(trade.takerOrder.signature);
+    const makerSig = parseSignature(trade.makerOrder.signature);
+    const takerSig = parseSignature(trade.takerOrder.signature);
+
+    // Diagnostic: log exact params for debugging INVALID_SIG
+    console.log(`[settler-diag] trade=${trade.id}`);
+    console.log(`[settler-diag] taker trader=${takerOrder.trader}`);
+    console.log(`[settler-diag] taker market_id=${takerOrder.market_id}`);
+    console.log(`[settler-diag] taker token_id=${takerOrder.token_id}`);
+    console.log(`[settler-diag] taker is_buy=${takerOrder.is_buy}`);
+    console.log(`[settler-diag] taker price=${takerOrder.price} (raw="${trade.takerOrder.price}")`);
+    console.log(`[settler-diag] taker amount=${takerOrder.amount} (raw="${trade.takerOrder.amount}")`);
+    console.log(`[settler-diag] taker nonce=${takerOrder.nonce} (raw="${trade.takerOrder.nonce}")`);
+    console.log(`[settler-diag] taker expiry=${takerOrder.expiry} (raw="${trade.takerOrder.expiry}")`);
+    console.log(`[settler-diag] taker sig=${trade.takerOrder.signature}`);
+    console.log(`[settler-diag] maker trader=${makerOrder.trader}`);
+    console.log(`[settler-diag] maker price=${makerOrder.price} (raw="${trade.makerOrder.price}")`);
+    console.log(`[settler-diag] maker sig=${trade.makerOrder.signature}`);
+    console.log(`[settler-diag] fillAmount=${fillAmount}`);
+    // Recompute taker hash to compare with on-chain
+    try {
+      const takerHash = computeOrderHash(
+        {
+          trader: trade.takerOrder.trader,
+          marketId: BigInt(onChainMarketId),
+          tokenId: BigInt(tokenId),
+          isBuy: trade.takerOrder.isBuy,
+          price: scalePrice(trade.takerOrder.price),
+          amount: BigInt(trade.takerOrder.amount),
+          nonce: BigInt(trade.takerOrder.nonce),
+          expiry: BigInt(trade.takerOrder.expiry),
+        },
+        context.exchange.address,
+        constants.StarknetChainId.SN_SEPOLIA,
+      );
+      console.log(`[settler-diag] taker computed hash=${takerHash}`);
+    } catch (e: unknown) {
+      console.log(`[settler-diag] hash computation error: ${e instanceof Error ? e.message : e}`);
+    }
 
     const reserveNonce =
       BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
@@ -116,6 +153,7 @@ export async function settleAmmTradeAtomic(
         reserveAmount,
         reserveNonce,
         reserveExpiry,
+        BigInt(onChainMarketId),
       ]),
     );
 
@@ -147,6 +185,15 @@ export async function settleAmmTradeAtomic(
           splitAmount,
         ]),
       );
+      // Ensure the exchange can transfer admin's freshly minted outcome tokens
+      // during settle_trade → safe_transfer_from. This is idempotent (no-op if
+      // already approved) and required when setupSeedLiquidity was never called.
+      calls.push(
+        conditionalTokens.populate("set_approval_for_all", [
+          context.exchange.address,
+          true,
+        ]),
+      );
     }
 
     calls.push(
@@ -154,10 +201,8 @@ export async function settleAmmTradeAtomic(
         makerOrder,
         takerOrder,
         fillAmount,
-        makerSigR,
-        makerSigS,
-        takerSigR,
-        takerSigS,
+        makerSig,
+        takerSig,
       ]),
     );
 
@@ -185,6 +230,15 @@ export async function settleAmmTradeAtomic(
         txHash: response.transaction_hash,
         success: false,
         error: `TX reverted: ${reason}`,
+      };
+    }
+
+    if (getFinalityStatus(receipt) === "REJECTED") {
+      return {
+        tradeId: trade.id,
+        txHash: response.transaction_hash,
+        success: false,
+        error: "TX rejected by network",
       };
     }
 

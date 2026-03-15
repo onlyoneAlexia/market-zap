@@ -40,6 +40,7 @@ const CT_HEX = normHex(CT_ADDRESS);
 const TRUSTED_RESOLVER_HEX = normHex(TRUSTED_RESOLVER);
 const MARKET_CREATED_SELECTOR_HEX = normHex(MARKET_CREATED_SELECTOR);
 const CONDITION_PREPARED_SELECTOR_HEX = normHex(CONDITION_PREPARED_SELECTOR);
+const SHOULD_LOG_SEED_MARKET_BOOT = process.env.DEBUG_SEED_MARKET === "1";
 type StarknetEvent = {
   from_address?: string;
   keys?: string[];
@@ -66,15 +67,30 @@ type ConditionView = {
 const RECEIPT_SUCCESS_STATES: Array<
   TransactionFinalityStatus | TransactionExecutionStatus
 > = ["ACCEPTED_ON_L2", "ACCEPTED_ON_L1"];
+function manualMarketSeedingEnabled(): boolean {
+  return (
+    process.env.ENABLE_MANUAL_MARKET_SEEDING === "true" ||
+    process.env.NODE_ENV !== "production"
+  );
+}
 
-console.log("[seed-market] resolved addresses:", {
-  factory: FACTORY_HEX,
-  conditionalTokens: CT_HEX,
-  trustedResolver: TRUSTED_RESOLVER_HEX,
-});
+if (SHOULD_LOG_SEED_MARKET_BOOT) {
+  console.log("[seed-market] resolved addresses:", {
+    factory: FACTORY_HEX,
+    conditionalTokens: CT_HEX,
+    trustedResolver: TRUSTED_RESOLVER_HEX,
+  });
+}
 
 /** Verify a create-market transaction on-chain before proxying it to the engine. */
 export async function POST(req: NextRequest) {
+  if (!manualMarketSeedingEnabled()) {
+    return NextResponse.json(
+      { error: "Manual market seeding is disabled" },
+      { status: 403 },
+    );
+  }
+
   const ENGINE_INTERNAL = process.env.ENGINE_INTERNAL_URL || "http://localhost:3001";
   const ENGINE_URL = `${ENGINE_INTERNAL}/api`;
   const API_KEY = process.env.ENGINE_API_KEY;

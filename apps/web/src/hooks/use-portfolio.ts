@@ -99,23 +99,38 @@ export function useClaimReward() {
         throw new Error(result.error ?? "Claim failed");
       }
 
-      // Record the claim in the engine DB immediately (don't wait for indexer)
-      if (address) {
-        try {
-          await api.recordClaim(address, marketId, outcomeIndex, result.txHash);
-        } catch {
-          // Non-fatal: indexer will eventually pick it up
-          console.warn("[claim] Failed to record claim in engine, indexer will catch up");
-        }
-      }
-
-      return result;
+      return {
+        ...result,
+        marketId,
+        outcomeIndex,
+      };
     },
-    onSuccess: () => {
+    onSuccess: (_result, variables) => {
+      if (address) {
+        queryClient.setQueryData(
+          queryKeys.portfolio.claimable(address),
+          (
+            current:
+              | Array<{ marketId: string; outcomeIndex: number }>
+              | undefined,
+          ) =>
+            current?.filter(
+              (reward) =>
+                !(
+                  reward.marketId === variables.marketId &&
+                  reward.outcomeIndex === variables.outcomeIndex
+                ),
+            ) ?? [],
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ["balance"] });
       queryClient.invalidateQueries({ queryKey: ["wallet-balance"] });
       queryClient.invalidateQueries({ queryKey: ["exchange-balance"] });
-      queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+      if (address) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.portfolio.all(address),
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["outcome-token"] });
     },
   });

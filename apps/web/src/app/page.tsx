@@ -4,27 +4,26 @@ import Image from "next/image";
 import { ArrowRight } from "@/components/ui/phosphor-icons";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CountUp } from "@/components/ui/count-up";
+
+export const revalidate = 30;
 
 const features = [
   {
     title: "Gasless Trading",
-    description:
-      "Trade without gas fees. Powered by StarkZap on Starknet for instant, free transactions.",
+    description: "Trade without gas fees. Powered by StarkZap on Starknet for instant, free transactions.",
   },
   {
     title: "On-Chain Settlement",
-    description:
-      "Every trade is individually settled on Starknet. Your funds, your keys, fully verifiable.",
+    description: "Every trade is individually settled on Starknet. Your funds, your keys, fully verifiable.",
   },
   {
     title: "Fair Execution",
-    description:
-      "Dark pool matching prevents front-running. Price-time priority ensures fair fills.",
+    description: "Dark pool matching prevents front-running. Price-time priority ensures fair fills.",
   },
   {
     title: "Multi-Outcome Markets",
-    description:
-      "Beyond binary. Trade on complex events with complementary pricing across outcomes.",
+    description: "Beyond binary. Trade on complex events with complementary pricing across outcomes.",
   },
 ];
 
@@ -47,16 +46,13 @@ type ApiEnvelope<T> = {
   data?: T;
 };
 
-async function fetchJsonWithTimeout<T>(
-  url: string,
-  timeoutMs = 2_000,
-): Promise<ApiEnvelope<T> | null> {
+async function fetchJsonWithTimeout<T>(url: string, timeoutMs = 2_000): Promise<ApiEnvelope<T> | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
-      cache: "no-store",
       signal: controller.signal,
+      next: { revalidate },
     });
     if (!response.ok) return null;
     const json = (await response.json()) as ApiEnvelope<T>;
@@ -100,42 +96,25 @@ async function loadHomeStats(): Promise<{
   traders: string;
 }> {
   const defaults = { totalVolume: "$0", markets: "0", traders: "0" };
-  const internal =
-    process.env.ENGINE_INTERNAL_URL || "http://localhost:3001";
+  const internal = process.env.ENGINE_INTERNAL_URL || "http://localhost:3001";
   const base = `${internal.replace(/\/+$/, "")}/api`;
 
   try {
     const [marketsJson, leaderboardJson] = await Promise.all([
-      fetchJsonWithTimeout<MarketListData>(
-        `${base}/markets?page=1&pageSize=200`,
-      ),
-      fetchJsonWithTimeout<LeaderboardData>(
-        `${base}/leaderboard?page=1&pageSize=1`,
-      ),
+      fetchJsonWithTimeout<MarketListData>(`${base}/markets?page=1&pageSize=200`),
+      fetchJsonWithTimeout<LeaderboardData>(`${base}/leaderboard?page=1&pageSize=1`),
     ]);
 
     if (!marketsJson?.data) return defaults;
 
     const items = marketsJson.data.items ?? [];
-    const totalMarkets =
-      typeof marketsJson.data.total === "number"
-        ? marketsJson.data.total
-        : items.length;
+    const totalMarkets = typeof marketsJson.data.total === "number" ? marketsJson.data.total : items.length;
 
-    const totalVolumeRaw = items.reduce(
-      (sum, item) => sum + toBigInt(item.totalVolume),
-      0n,
-    );
+    const totalVolumeRaw = items.reduce((sum, item) => sum + toBigInt(item.totalVolume), 0n);
     const totalVolume = compactUsd(Number(totalVolumeRaw) / 1_000_000);
 
-    const fallbackTraders = items.reduce(
-      (sum, item) => sum + (item.traders ?? 0),
-      0,
-    );
-    const totalTraders =
-      typeof leaderboardJson?.data?.total === "number"
-        ? leaderboardJson.data.total
-        : fallbackTraders;
+    const fallbackTraders = items.reduce((sum, item) => sum + (item.traders ?? 0), 0);
+    const totalTraders = typeof leaderboardJson?.data?.total === "number" ? leaderboardJson.data.total : fallbackTraders;
 
     return {
       totalVolume,
@@ -147,18 +126,26 @@ async function loadHomeStats(): Promise<{
   }
 }
 
+const statsMeta = [
+  { key: "totalVolume", label: "Volume", delay: 0 },
+  { key: "markets", label: "Markets", delay: 150 },
+  { key: "traders", label: "Traders", delay: 300 },
+] as const;
+
 async function HomeStats() {
   const stats = await loadHomeStats();
   return (
     <>
-      <span className="text-primary">{stats.totalVolume}</span>
-      <span className="text-muted-foreground/40"> Vol</span>
-      <span className="mx-2 text-border/40 select-none">|</span>
-      <span className="text-primary">{stats.markets}</span>
-      <span className="text-muted-foreground/40"> Markets</span>
-      <span className="mx-2 text-border/40 select-none">|</span>
-      <span className="text-primary">{stats.traders}</span>
-      <span className="text-muted-foreground/40"> Traders</span>
+      {statsMeta.map(({ key, label, delay }) => (
+        <div
+          key={key}
+          className="animate-stat-reveal glass-panel flex flex-col items-center justify-center rounded-lg px-6 py-5 min-w-[120px] sm:min-w-[140px]"
+          style={{ animationDelay: `${delay}ms` }}
+        >
+          <CountUp value={stats[key]} className="font-mono text-2xl font-bold text-primary text-glow-amber sm:text-3xl" />
+          <span className="mt-1 font-mono text-[10px] font-semibold tracking-[0.2em] text-muted-foreground/60 uppercase">{label}</span>
+        </div>
+      ))}
     </>
   );
 }
@@ -166,18 +153,23 @@ async function HomeStats() {
 function StatsBarSkeleton() {
   return (
     <>
-      <Skeleton className="inline-block h-4 w-16" />
-      <span className="mx-2 text-border select-none">&middot;</span>
-      <Skeleton className="inline-block h-4 w-16" />
-      <span className="mx-2 text-border select-none">&middot;</span>
-      <Skeleton className="inline-block h-4 w-16" />
+      {statsMeta.map(({ key, label, delay }) => (
+        <div
+          key={key}
+          className="animate-stat-reveal glass-panel flex flex-col items-center justify-center rounded-lg px-6 py-5 min-w-[120px] sm:min-w-[140px]"
+          style={{ animationDelay: `${delay}ms` }}
+        >
+          <Skeleton className="h-8 w-16 rounded" />
+          <span className="mt-1 font-mono text-[10px] font-semibold tracking-[0.2em] text-muted-foreground/60 uppercase">{label}</span>
+        </div>
+      ))}
     </>
   );
 }
 
 export default function HomePage() {
   return (
-    <div className="flex flex-col grid-bg">
+    <div className="flex flex-col">
       {/* Hero — terminal style */}
       <section className="container mx-auto max-w-screen-xl px-4 pt-16 pb-14 sm:pt-24 sm:pb-20 lg:pt-32 lg:pb-24">
         <div className="max-w-2xl">
@@ -191,28 +183,27 @@ export default function HomePage() {
             <span className="text-primary text-glow-amber">Trade on outcomes.</span>
           </h1>
           <p className="mt-6 animate-appear max-w-[50ch] text-base leading-relaxed text-muted-foreground [animation-delay:100ms] sm:text-lg">
-            Create and trade predictions on real-world events.
-            Fast, gasless, and fully on-chain.
+            Create and trade predictions on real-world events. Fast, gasless, and fully on-chain.
           </p>
           <div className="mt-8 flex animate-appear flex-col gap-3 [animation-delay:200ms] sm:flex-row sm:items-center">
-            <Link href="/markets">
+            <Link href="/markets" prefetch>
               <Button size="xl" className="w-full sm:w-auto font-mono tracking-wider">
                 Start Trading
               </Button>
             </Link>
-            <Link href="/create">
+            <Link href="/create" prefetch>
               <Button variant="outline" size="xl" className="w-full sm:w-auto font-mono tracking-wider">
                 Create Market
               </Button>
             </Link>
           </div>
+        </div>
 
-          {/* Stats — terminal style */}
-          <div className="mt-10 animate-appear font-mono text-xs text-muted-foreground [animation-delay:350ms] flex items-center gap-4">
-            <Suspense fallback={<StatsBarSkeleton />}>
-              <HomeStats />
-            </Suspense>
-          </div>
+        {/* Stats — prominent centered cards */}
+        <div className="mt-14 flex flex-wrap justify-center gap-4 sm:gap-6">
+          <Suspense fallback={<StatsBarSkeleton />}>
+            <HomeStats />
+          </Suspense>
         </div>
       </section>
 
@@ -230,9 +221,7 @@ export default function HomePage() {
                 <span className="inline-block h-px w-4 bg-primary" />
                 {feature.title}
               </h3>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                {feature.description}
-              </p>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{feature.description}</p>
             </div>
           ))}
         </div>
@@ -257,16 +246,23 @@ export default function HomePage() {
         <div className="container mx-auto flex max-w-screen-xl items-center justify-between px-4 py-4 text-[11px] font-mono text-muted-foreground">
           <div className="flex items-center gap-0">
             <svg width="24" height="20" viewBox="0 0 32 28" fill="none" className="shrink-0 -mr-0.5">
-              <polyline points="2,18 7,18 10,8 13,22 16,4 19,18 24,18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" className="text-primary" />
+              <polyline
+                points="2,18 7,18 10,8 13,22 16,4 19,18 24,18"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+                className="text-primary"
+              />
               <circle cx="16" cy="4" r="2" fill="currentColor" className="text-primary" opacity="0.4" />
             </svg>
-            <span className="font-bold tracking-wider">arket<span className="text-primary">zap</span></span>
+            <span className="font-bold tracking-wider">
+              arket<span className="text-primary">zap</span>
+            </span>
           </div>
           <div className="flex items-center gap-4">
-            <Link
-              href="/markets"
-              className="tracking-wider transition-colors duration-snappy ease-snappy hover:text-foreground"
-            >
+            <Link href="/markets" className="tracking-wider transition-colors duration-snappy ease-snappy hover:text-foreground">
               Markets
             </Link>
             <span className="flex items-center gap-1.5">
@@ -279,13 +275,7 @@ export default function HomePage() {
                 title="Starknet"
               >
                 Starknet
-                <Image
-                  src="/starknet-icon.svg"
-                  alt=""
-                  width={16}
-                  height={16}
-                  className="h-4 w-4"
-                />
+                <Image src="/starknet-icon.svg" alt="" width={16} height={16} className="h-4 w-4" />
               </a>
               with
               <a
@@ -296,14 +286,12 @@ export default function HomePage() {
                 title="StarkZap"
               >
                 StarkZap
-                <Image
-                  src="/starkzap-icon.svg"
-                  alt=""
-                  width={16}
-                  height={16}
-                  className="h-4 w-4 rounded"
-                />
+                <Image src="/starkzap-icon.svg" alt="" width={16} height={16} className="h-4 w-4 rounded" />
               </a>
+            </span>
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              Starknet Sepolia
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-yes" />
             </span>
           </div>
         </div>

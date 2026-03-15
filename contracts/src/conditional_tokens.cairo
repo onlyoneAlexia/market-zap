@@ -105,6 +105,7 @@ pub mod ConditionalTokens {
         PositionRedeemed: PositionRedeemed,
         PayoutsReported: PayoutsReported,
         UpgradeProposed: UpgradeProposed,
+        UpgradeCancelled: UpgradeCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -158,6 +159,9 @@ pub mod ConditionalTokens {
         pub proposed_at: u64,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeCancelled {}
+
     // -----------------------------------------------------------------
     //  Errors
     // -----------------------------------------------------------------
@@ -176,6 +180,8 @@ pub mod ConditionalTokens {
         pub const COLLATERAL_MISMATCH: felt252 = 'CT: collateral mismatch';
         pub const UPGRADE_NOT_PROPOSED: felt252 = 'CT: no pending upgrade';
         pub const UPGRADE_TIMELOCK: felt252 = 'CT: timelock not elapsed';
+        pub const UPGRADE_ALREADY_PENDING: felt252 = 'CT: upgrade already pending';
+        pub const ZERO_ORACLE: felt252 = 'CT: zero oracle address';
     }
 
     // -----------------------------------------------------------------
@@ -207,6 +213,9 @@ pub mod ConditionalTokens {
 
     // -----------------------------------------------------------------
     //  Upgrade with 48-hour timelock
+    //  M-4 fix: prevent re-proposal overwrite.
+    //  M-5 fix: add cancel_upgrade.
+    //  L-5 fix: emit events consistently.
     // -----------------------------------------------------------------
     const UPGRADE_TIMELOCK_SECONDS: u64 = 48 * 60 * 60; // 48 hours
 
@@ -214,6 +223,9 @@ pub mod ConditionalTokens {
     impl UpgradeTimelockImpl of super::IUpgradeTimelock<ContractState> {
         fn propose_upgrade(ref self: ContractState, new_class_hash: ClassHash) {
             self.ownable.assert_only_owner();
+            // M-4 fix: prevent overwriting a pending proposal.
+            let existing = self.proposed_upgrade.read();
+            assert(existing.is_zero(), Errors::UPGRADE_ALREADY_PENDING);
             let now = get_block_timestamp();
             self.proposed_upgrade.write(new_class_hash);
             self.upgrade_proposed_at.write(now);
@@ -231,6 +243,16 @@ pub mod ConditionalTokens {
             self.proposed_upgrade.write(Zero::zero());
             self.upgrade_proposed_at.write(0);
             self.upgradeable.upgrade(proposed);
+        }
+
+        /// M-5 fix: cancel a pending upgrade proposal.
+        fn cancel_upgrade(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            let proposed = self.proposed_upgrade.read();
+            assert(proposed.is_non_zero(), Errors::UPGRADE_NOT_PROPOSED);
+            self.proposed_upgrade.write(Zero::zero());
+            self.upgrade_proposed_at.write(0);
+            self.emit(UpgradeCancelled {});
         }
     }
 
@@ -250,6 +272,8 @@ pub mod ConditionalTokens {
             // Validate inputs.
             assert(outcome_count >= 2, Errors::INVALID_OUTCOME_COUNT);
             assert(outcome_count <= MAX_OUTCOMES, Errors::TOO_MANY_OUTCOMES);
+            // M-3 fix: reject zero-address oracles.
+            assert(!oracle.is_zero(), Errors::ZERO_ORACLE);
 
             // condition_id = poseidon(caller, question_id, outcome_count)
             let caller = get_caller_address();
@@ -279,6 +303,7 @@ pub mod ConditionalTokens {
             condition_id
         }
 
+        /// C-3 fix: use actual_received from vault deposit for minting.
         fn split_position(
             ref self: ContractState,
             collateral_token: ContractAddress,
@@ -296,7 +321,8 @@ pub mod ConditionalTokens {
             let vault = ICollateralVaultDispatcher {
                 contract_address: self.vault.read(),
             };
-            vault.deposit(collateral_token, condition_id, caller, amount);
+            // C-3 fix: vault now returns actual_received.
+            let actual_received = vault.deposit(collateral_token, condition_id, caller, amount);
 
             // Enforce single collateral per condition: first split locks the token,
             // subsequent splits must use the same token.
@@ -307,18 +333,18 @@ pub mod ConditionalTokens {
                 assert(existing_collateral == collateral_token, Errors::COLLATERAL_MISMATCH);
             }
 
-            // Mint one of each outcome token to the caller.
+            // C-3 fix: mint based on actual_received, not requested amount.
             let outcome_count = condition.outcome_count;
             let mut i: u32 = 0;
             while i < outcome_count {
                 let token_id = compute_token_id(condition_id, i);
-                self.erc1155.mint_with_acceptance_check(caller, token_id, amount, array![].span());
+                self.erc1155.mint_with_acceptance_check(caller, token_id, actual_received, array![].span());
                 i += 1;
             };
 
             self
                 .emit(
-                    PositionSplit { condition_id, user: caller, collateral_token, amount },
+                    PositionSplit { condition_id, user: caller, collateral_token, amount: actual_received },
                 );
         }
 
@@ -360,6 +386,7 @@ pub mod ConditionalTokens {
                 );
         }
 
+        /// L-7 fix: accumulate (balance * numerator) first, divide once.
         fn redeem_position(
             ref self: ContractState,
             collateral_token: ContractAddress,
@@ -377,22 +404,22 @@ pub mod ConditionalTokens {
             let denominator = self.payout_denominators.read(condition_id);
             let outcome_count = condition.outcome_count;
 
-            // Calculate total payout by iterating outcomes.
-            let mut total_payout: u256 = 0;
+            // L-7 fix: accumulate weighted sum first, divide once at end.
+            let mut weighted_sum: u256 = 0;
             let mut i: u32 = 0;
             while i < outcome_count {
                 let token_id = compute_token_id(condition_id, i);
                 let balance = self.erc1155.balance_of(caller, token_id);
                 if balance > 0 {
                     let numerator = self.payout_numerators.read((condition_id, i));
-                    // payout = balance * numerator / denominator
-                    total_payout += (balance * numerator) / denominator;
+                    weighted_sum += balance * numerator;
                     // Burn all outcome tokens.
                     self.erc1155.burn(caller, token_id, balance);
                 }
                 i += 1;
             };
 
+            let total_payout = weighted_sum / denominator;
             assert(total_payout > 0, Errors::ZERO_PAYOUT);
 
             // Withdraw the payout from the vault.
@@ -472,6 +499,7 @@ pub mod ConditionalTokens {
 
 // -----------------------------------------------------------------
 //  Upgrade timelock interface (contract-local)
+//  M-5 fix: added cancel_upgrade.
 // -----------------------------------------------------------------
 use starknet::class_hash::ClassHash;
 
@@ -479,4 +507,5 @@ use starknet::class_hash::ClassHash;
 pub trait IUpgradeTimelock<TContractState> {
     fn propose_upgrade(ref self: TContractState, new_class_hash: ClassHash);
     fn execute_upgrade(ref self: TContractState);
+    fn cancel_upgrade(ref self: TContractState);
 }

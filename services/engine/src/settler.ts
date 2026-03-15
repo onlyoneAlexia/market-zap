@@ -14,12 +14,14 @@ import {
 } from "./settler-amm.js";
 import {
   registerDarkMarket as registerDarkMarketBatch,
+  settleDarkTradesAtomic as settleDarkTradesAtomicBatch,
   settleTradesAtomic as settleTradesAtomicBatch,
 } from "./settler-batch.js";
 import { settleOrRollback as settleOrRollbackWithRelease } from "./settler-rollback.js";
 import {
   buildCairoOrder,
   getExecutionStatus,
+  getFinalityStatus,
   getRevertReason,
   parseSignature,
   scalePrice,
@@ -139,8 +141,8 @@ export class Settler {
 
       const makerOrder = buildCairoOrder(trade.makerOrder, onChainMarketId, tokenId);
       const takerOrder = buildCairoOrder(trade.takerOrder, onChainMarketId, tokenId);
-      const [makerSigR, makerSigS] = parseSignature(trade.makerOrder.signature);
-      const [takerSigR, takerSigS] = parseSignature(trade.takerOrder.signature);
+      const makerSig = parseSignature(trade.makerOrder.signature);
+      const takerSig = parseSignature(trade.takerOrder.signature);
 
       const response: InvokeFunctionResponse = await this.exchange.invoke(
         "settle_trade",
@@ -148,10 +150,8 @@ export class Settler {
           makerOrder,
           takerOrder,
           BigInt(trade.fillAmount),
-          makerSigR,
-          makerSigS,
-          takerSigR,
-          takerSigS,
+          makerSig,
+          takerSig,
         ],
       );
 
@@ -170,6 +170,15 @@ export class Settler {
           txHash: response.transaction_hash,
           success: false,
           error: `TX reverted: ${reason}`,
+        };
+      }
+
+      if (getFinalityStatus(receipt) === "REJECTED") {
+        return {
+          tradeId: trade.id,
+          txHash: response.transaction_hash,
+          success: false,
+          error: "TX rejected by network",
         };
       }
 
@@ -217,8 +226,8 @@ export class Settler {
 
       const makerOrder = buildCairoOrder(trade.makerOrder, onChainMarketId, tokenId);
       const takerOrder = buildCairoOrder(trade.takerOrder, onChainMarketId, tokenId);
-      const [makerSigR, makerSigS] = parseSignature(trade.makerOrder.signature);
-      const [takerSigR, takerSigS] = parseSignature(trade.takerOrder.signature);
+      const makerSig = parseSignature(trade.makerOrder.signature);
+      const takerSig = parseSignature(trade.takerOrder.signature);
 
       // Compute how much collateral the buyer needs reserved.
       // cost = fillAmount * executionPrice / 1e18
@@ -235,7 +244,7 @@ export class Settler {
       const reserveAmount = trade.makerOrder.isBuy ? cost : cost + takerFee;
 
       // Build multicall: [reserve_balance, settle_trade]
-      // reserve_balance ABI: (user, token, amount, nonce, expiry)
+      // reserve_balance ABI: (user, token, amount, nonce, expiry, market_id)
       const reserveNonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
       const calls: Call[] = [
         this.exchange.populate("reserve_balance", [
@@ -244,15 +253,14 @@ export class Settler {
           reserveAmount,
           reserveNonce,
           reserveExpiry,
+          BigInt(onChainMarketId),
         ]),
         this.exchange.populate("settle_trade", [
           makerOrder,
           takerOrder,
           fillAmount,
-          makerSigR,
-          makerSigS,
-          takerSigR,
-          takerSigS,
+          makerSig,
+          takerSig,
         ]),
       ];
 
@@ -279,6 +287,15 @@ export class Settler {
           txHash: response.transaction_hash,
           success: false,
           error: `TX reverted: ${reason}`,
+        };
+      }
+
+      if (getFinalityStatus(receipt) === "REJECTED") {
+        return {
+          tradeId: trade.id,
+          txHash: response.transaction_hash,
+          success: false,
+          error: "TX rejected by network",
         };
       }
 
@@ -341,6 +358,7 @@ export class Settler {
           reserveAmount,
           reserveNonce,
           reserveExpiry,
+          BigInt(onChainMarketId),
         ]),
         // Dark settlement — minimal calldata
         this.exchange.populate("settle_dark_trade", [
@@ -375,6 +393,15 @@ export class Settler {
           txHash: response.transaction_hash,
           success: false,
           error: `TX reverted: ${reason}`,
+        };
+      }
+
+      if (getFinalityStatus(receipt) === "REJECTED") {
+        return {
+          tradeId: trade.id,
+          txHash: response.transaction_hash,
+          success: false,
+          error: "TX rejected by network",
         };
       }
 
@@ -476,6 +503,28 @@ export class Settler {
     );
   }
 
+  async settleDarkTradesAtomic(
+    trades: Array<{ trade: Trade; tradeCommitment: string }>,
+    collateralToken: string,
+    tokenId: string,
+    onChainMarketId: string,
+    reserveExpiry: number,
+  ): Promise<{ success: boolean; txHash: string; error?: string }> {
+    return settleDarkTradesAtomicBatch(
+      {
+        account: this.account,
+        exchange: this.exchange,
+        provider: this.provider,
+        withRetry,
+      },
+      trades,
+      collateralToken,
+      tokenId,
+      onChainMarketId,
+      reserveExpiry,
+    );
+  }
+
   // -----------------------------------------------------------------------
   // Balance reservation
   // -----------------------------------------------------------------------
@@ -489,16 +538,17 @@ export class Settler {
     token: string,
     amount: string,
     expiry: number,
+    marketId: string,
   ): Promise<{ success: boolean; txHash: string; error?: string }> {
     try {
       console.log(
-        `[settler] reserving ${amount} of ${token} for ${user} (expiry=${expiry})`,
+        `[settler] reserving ${amount} of ${token} for ${user} (expiry=${expiry}, market=${marketId})`,
       );
 
       const reserveNonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
       const response: InvokeFunctionResponse = await this.exchange.invoke(
         "reserve_balance",
-        [user, token, BigInt(amount), reserveNonce, expiry],
+        [user, token, BigInt(amount), reserveNonce, expiry, BigInt(marketId)],
       );
 
       const receipt = await this.provider.waitForTransaction(response.transaction_hash);
@@ -507,6 +557,10 @@ export class Settler {
         const reason = getRevertReason(receipt) ?? "unknown";
         console.error(`[settler] reserve_balance REVERTED: ${reason}`);
         return { success: false, txHash: response.transaction_hash, error: `TX reverted: ${reason}` };
+      }
+
+      if (getFinalityStatus(receipt) === "REJECTED") {
+        return { success: false, txHash: response.transaction_hash, error: "TX rejected by network" };
       }
 
       console.log(
@@ -552,6 +606,10 @@ export class Settler {
         const reason = getRevertReason(receipt) ?? "unknown";
         console.error(`[settler] release_balance REVERTED: ${reason}`);
         return { success: false, txHash: response.transaction_hash, error: `TX reverted: ${reason}` };
+      }
+
+      if (getFinalityStatus(receipt) === "REJECTED") {
+        return { success: false, txHash: response.transaction_hash, error: "TX rejected by network" };
       }
 
       console.log(
@@ -621,8 +679,9 @@ export class Settler {
     }
 
     try {
+      const totalNeeded = params.splitAmount + params.depositAmount;
       console.log(
-        `[settler] setting up seed liquidity: split=${params.splitAmount}, deposit=${params.depositAmount}`,
+        `[settler] setting up seed liquidity: split=${params.splitAmount}, deposit=${params.depositAmount}, total=${totalNeeded} (${Number(totalNeeded) / 1e6} USDC)`,
       );
 
       const ct = new Contract({
@@ -682,8 +741,16 @@ export class Settler {
       return { success: true, txHash: response.transaction_hash };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[settler] seed liquidity setup failed:`, message);
-      return { success: false, txHash: "", error: message };
+      // Surface actionable diagnostics for common on-chain failures
+      let diagnostic = message;
+      if (message.includes("insufficient balance")) {
+        const totalNeeded = params.splitAmount + params.depositAmount;
+        diagnostic = `Admin account has insufficient USDC balance. Seeding requires ${Number(totalNeeded) / 1e6} USDC (${Number(params.splitAmount) / 1e6} for split + ${Number(params.depositAmount) / 1e6} for deposit). Fund admin address ${this.adminAddress} with USDC on Starknet Sepolia.`;
+      } else if (message.includes("condition not found")) {
+        diagnostic = `Condition ${params.conditionId} not found on ConditionalTokens (${this.conditionalTokensAddress}). The market may not have been created on-chain yet.`;
+      }
+      console.error(`[settler] seed liquidity setup failed:`, diagnostic);
+      return { success: false, txHash: "", error: diagnostic };
     }
   }
 
@@ -699,14 +766,19 @@ export class Settler {
    * The AdminResolver calls ConditionalTokens.report_payouts() which marks
    * the condition as resolved and enables redeem_position() for token holders.
    */
-  async resolveMarket(
+  /**
+   * Phase 1: Propose an outcome on-chain. Returns immediately after the
+   * proposal tx is confirmed (~seconds). The caller must wait for the
+   * dispute period (≥3600 s) and then call `finalizeResolution()`.
+   */
+  async proposeResolution(
     onChainMarketId: string,
     conditionId: string,
     winningOutcome: number,
   ): Promise<{ success: boolean; txHash: string; error?: string }> {
     try {
       console.log(
-        `[settler] resolving market: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}, winningOutcome=${winningOutcome}`,
+        `[settler] proposing resolution: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}, winningOutcome=${winningOutcome}`,
       );
 
       const resolverAddress = getContractAddress("Resolver", "sepolia");
@@ -717,9 +789,8 @@ export class Settler {
         providerOrAccount: this.account,
       });
 
-      // Phase 1: Set dispute period to 1 second + propose outcome
       const proposeCalls: Call[] = [
-        resolver.populate("set_dispute_period", [1]),
+        resolver.populate("set_dispute_period", [3600]),
         resolver.populate("propose_outcome", [onChainMarketId, conditionId, winningOutcome]),
       ];
 
@@ -743,14 +814,39 @@ export class Settler {
         return { success: false, txHash: proposeResponse.transaction_hash, error: `Proposal reverted: ${reason}` };
       }
 
-      console.log(`[settler] proposal confirmed, waiting for dispute period...`);
+      console.log(`[settler] proposal confirmed: ${conditionId}`);
+      return { success: true, txHash: proposeResponse.transaction_hash };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[settler] proposal failed:`, message);
+      return { success: false, txHash: "", error: message };
+    }
+  }
 
-      // Phase 2: Wait for dispute period (1 second + buffer), then finalize
-      await new Promise((r) => setTimeout(r, 3000));
+  /**
+   * Phase 2: Finalize a previously proposed resolution. Must be called
+   * after the dispute period (≥3600 s) has elapsed.
+   */
+  async finalizeResolution(
+    onChainMarketId: string,
+    conditionId: string,
+  ): Promise<{ success: boolean; txHash: string; error?: string }> {
+    try {
+      console.log(
+        `[settler] finalizing resolution: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}`,
+      );
+
+      const resolverAddress = getContractAddress("Resolver", "sepolia");
+      const { ResolverABI } = await import("@market-zap/shared");
+      const resolver = new Contract({
+        abi: ResolverABI as unknown as Contract["abi"],
+        address: resolverAddress,
+        providerOrAccount: this.account,
+      });
 
       const finalizeResponse = await withRetry(
         () => this.account.execute([
-          resolver.populate("finalize_resolution", [conditionId]),
+          resolver.populate("finalize_resolution", [onChainMarketId, conditionId]),
         ]),
         { label: `finalize ${conditionId}` },
       );
@@ -774,8 +870,54 @@ export class Settler {
       return { success: true, txHash: finalizeResponse.transaction_hash };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[settler] resolution failed:`, message);
+      console.error(`[settler] finalize failed:`, message);
       return { success: false, txHash: "", error: message };
+    }
+  }
+
+  /**
+   * Read the on-chain proposal for a condition_id from the AdminResolver.
+   * Returns null if no proposal exists (status == None).
+   */
+  async getOnChainProposal(
+    conditionId: string,
+  ): Promise<{ proposedOutcome: number; proposedAt: number; disputePeriod: number; status: number } | null> {
+    try {
+      const resolverAddress = getContractAddress("Resolver", "sepolia");
+      const { ResolverABI } = await import("@market-zap/shared");
+      const resolver = new Contract({
+        abi: ResolverABI as unknown as Contract["abi"],
+        address: resolverAddress,
+        providerOrAccount: this.provider,
+      });
+      const result = await resolver.call("get_proposal", [conditionId]) as {
+        proposed_outcome: bigint | number;
+        proposed_at: bigint | number;
+        dispute_period: bigint | number;
+        status: { variant: Record<string, unknown> } | bigint | number;
+      };
+
+      // Status is an enum: 0=None, 1=Proposed, 2=Finalized
+      let statusNum = 0;
+      if (typeof result.status === "object" && result.status !== null && "variant" in result.status) {
+        const variant = result.status.variant;
+        if ("Proposed" in variant) statusNum = 1;
+        else if ("Finalized" in variant) statusNum = 2;
+      } else {
+        statusNum = Number(result.status);
+      }
+
+      if (statusNum === 0) return null;
+
+      return {
+        proposedOutcome: Number(result.proposed_outcome),
+        proposedAt: Number(result.proposed_at),
+        disputePeriod: Number(result.dispute_period),
+        status: statusNum,
+      };
+    } catch (err) {
+      console.warn(`[settler] getOnChainProposal failed:`, err instanceof Error ? err.message : err);
+      return null;
     }
   }
 

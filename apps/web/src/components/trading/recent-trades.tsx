@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { ArrowUp, ArrowDown, Spinner, Warning } from "@phosphor-icons/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { TradeProofDialog, type TradeProof } from "./trade-proof-dialog";
@@ -38,8 +38,8 @@ export const RecentTrades = React.memo(function RecentTrades({ trades }: RecentT
   const [selectedTrade, setSelectedTrade] = useState<TradeProof | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  // Filter out failed trades — only show settled or pending
-  const visibleTrades = trades.filter((t) => t.settlementStatus !== "failed");
+  // Show all trades — failed ones get a distinct status indicator
+  const visibleTrades = trades;
 
   function handleTradeClick(trade: Trade) {
     setSelectedTrade({
@@ -105,22 +105,33 @@ export const RecentTrades = React.memo(function RecentTrades({ trades }: RecentT
                   {trade.outcome}
                 </span>
                 <span className={cn(
-                  "text-right",
+                  "text-right flex items-center justify-end gap-1",
                   trade.settlementStatus === "failed" ? "text-destructive" : "text-muted-foreground",
                 )}>
-                  {trade.settlementStatus === "failed"
-                    ? "failed"
-                    : trade.settled === false
-                      ? "settling\u2026"
-                      : formatTime(trade.timestamp)}
+                  {trade.settlementStatus === "failed" ? (
+                    <>
+                      <Warning className="h-3 w-3" weight="bold" />
+                      failed
+                    </>
+                  ) : trade.settled === false ? (
+                    <>
+                      <Spinner className="h-3 w-3 animate-spin" weight="bold" />
+                      settling
+                    </>
+                  ) : (
+                    formatTime(trade.timestamp)
+                  )}
                 </span>
               </div>
             ))}
 
             {visibleTrades.length === 0 && (
-              <p className="py-6 text-center text-xs text-muted-foreground">
-                No trades yet
-              </p>
+              <div className="py-6 text-center">
+                <p className="text-xs text-muted-foreground">No trades yet</p>
+                <p className="mt-1 text-[10px] text-muted-foreground/60">
+                  Be the first to trade on this market. Place a buy or sell order using the panel on the right.
+                </p>
+              </div>
             )}
           </div>
         </CardContent>

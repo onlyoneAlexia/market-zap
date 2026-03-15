@@ -1,7 +1,7 @@
 import { MarketZapAPI } from "@market-zap/shared";
 
 const RAW_ENGINE_URL =
-  process.env.NEXT_PUBLIC_ENGINE_URL || "http://localhost:3001/api";
+  process.env.NEXT_PUBLIC_ENGINE_URL || "/engine-api";
 
 /**
  * Resolve a possibly-relative URL against the current page origin.
@@ -24,7 +24,7 @@ export const ENGINE_URL = resolveUrl(RAW_ENGINE_URL);
 export const api = new MarketZapAPI(ENGINE_URL);
 
 const RAW_ENGINE_WS_URL =
-  process.env.NEXT_PUBLIC_ENGINE_WS_URL || "ws://localhost:3001/ws";
+  process.env.NEXT_PUBLIC_ENGINE_WS_URL || "/engine-ws";
 
 /**
  * Resolve the WebSocket URL. Relative paths like "/engine-ws" become

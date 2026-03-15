@@ -3,6 +3,7 @@
 import {
   cleanupCartridgeControllerDom,
   getMarketZapCartridgeConnectOptions,
+  getContractAddress,
   type CartridgeConnectOptions,
 } from "@market-zap/shared";
 import { useAppStore } from "@/hooks/use-store";
@@ -39,6 +40,25 @@ let starkzapClientPromise: Promise<MarketZapWalletType> | null = null;
 let cartridgeClient: MarketZapWalletType | null = null;
 let cartridgeClientPromise: Promise<MarketZapWalletType> | null = null;
 let cartridgeConnectPromise: Promise<CartridgeConnectResult> | null = null;
+
+const CARTRIDGE_SESSION_EXCHANGE_KEY = "mz:cartridge-exchange-addr";
+
+function isCartridgeSessionStale(): boolean {
+  try {
+    const stored = localStorage.getItem(CARTRIDGE_SESSION_EXCHANGE_KEY);
+    const current = getContractAddress("CLOBRouter", "sepolia");
+    return !!stored && stored !== current;
+  } catch {
+    return false;
+  }
+}
+
+function saveCartridgeSessionExchange(): void {
+  try {
+    const current = getContractAddress("CLOBRouter", "sepolia");
+    localStorage.setItem(CARTRIDGE_SESSION_EXCHANGE_KEY, current);
+  } catch {}
+}
 
 function setConnectedWallet(
   setWallet: SetWallet,
@@ -197,7 +217,11 @@ export async function connectExtensionWallet(
     throw new Error(`${getWalletDisplayName(provider)} extension not detected`);
   }
 
-  await walletObject.enable();
+  // Reuse the injected extension session when the account is already exposed.
+  // Calling enable() again during reconnect can hang the submit flow.
+  if (!walletObject.account || !walletObject.selectedAddress) {
+    await walletObject.enable();
+  }
   if (!walletObject.account || !walletObject.selectedAddress) {
     throw new Error("Wallet connection was rejected or failed");
   }
@@ -224,6 +248,7 @@ export async function connectCartridgeWalletClient(
 
     await client.ensureReady();
     setConnectedWallet(setWallet, "cartridge", state.address);
+    saveCartridgeSessionExchange();
     return client;
   };
 
@@ -259,15 +284,31 @@ export async function restoreWalletConnection(
   try {
     if (provider === "cartridge") {
       const client = await getCartridgeClient();
+
+      // If the exchange address changed since the session was created
+      // (e.g. contract redeployment), the session policies are stale.
+      // Force a fresh connection so new policies are registered.
+      if (client.hasWallet() && isCartridgeSessionStale()) {
+        console.warn("[wallet] Cartridge session stale (exchange address changed), reconnecting...");
+        await client.disconnect().catch(() => {});
+        resetCartridgeClient();
+        const freshClient = await connectCartridgeWalletClient(setWallet);
+        saveCartridgeSessionExchange();
+        return freshClient;
+      }
+
       if (client.hasWallet()) {
         const sessionAddress = client.getState().address;
         if (sessionAddress) {
           setConnectedWallet(setWallet, "cartridge", sessionAddress);
         }
+        saveCartridgeSessionExchange();
         return client;
       }
 
-      return connectCartridgeWalletClient(setWallet);
+      const freshClient = await connectCartridgeWalletClient(setWallet);
+      saveCartridgeSessionExchange();
+      return freshClient;
     }
 
     const client = await getClient();

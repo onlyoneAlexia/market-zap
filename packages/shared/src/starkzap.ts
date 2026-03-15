@@ -1,7 +1,7 @@
 import { StarkSDK, StarkSigner, Contract } from "starkzap";
 import type { WalletInterface } from "starkzap";
 import type { Call, Signature, Account } from "starknet";
-import { hash, RpcProvider } from "starknet";
+import { hash, RpcProvider, byteArray } from "starknet";
 import { getContractAddress, CLOBRouterABI, ERC20ABI, MarketFactoryABI, ResolverABI, ConditionalTokensABI } from "./contracts";
 import type { SupportedNetwork } from "./constants";
 import { computeOrderHash, signOrderHash, formatSignature, buildOrderTypedData } from "./order-hash";
@@ -30,6 +30,9 @@ export {
   type WalletConnectionKind,
   type WalletState,
 } from "./starkzap-internals";
+
+const MAINNET_CHAIN_ID = "0x534e5f4d41494e";
+const SEPOLIA_CHAIN_ID = "0x534e5f5345504f4c4941";
 
 export class MarketZapWallet {
   private sdk: StarkSDK;
@@ -162,11 +165,14 @@ export class MarketZapWallet {
     }
 
     this.privateKey = null;
+    const rpcProvider = this.sdk.getProvider();
     // Create a lightweight WalletInterface adapter around the raw Account
     this.wallet = {
       address: account.address,
       getAccount: () => account,
-      getProvider: () => account as any,
+      // Keep signing/submission on the browser wallet, but route reads and
+      // receipt polling through StarkZap's configured RPC provider.
+      getProvider: () => rpcProvider as any,
       execute: async (calls: Call[]) => {
         const result = await account.execute(calls as any);
         // Braavos / ArgentX may return { hash }, { transactionHash }, or { transaction_hash }
@@ -179,7 +185,7 @@ export class MarketZapWallet {
         return {
           transactionHash: txHash,
           wait: async () => {
-            const receipt = await account.waitForTransaction(txHash);
+            const receipt = await rpcProvider.waitForTransaction(txHash);
             // finality_status = "REJECTED" means the tx was dropped before block inclusion
             const finalityStatus =
               (receipt as any).finality_status ?? (receipt as any).finalityStatus;
@@ -315,7 +321,97 @@ export class MarketZapWallet {
     if (!txHash) {
       throw new Error("Transaction submitted but no transaction hash was returned");
     }
+
+    // Verify on-chain execution status — Starknet can finalize REVERTED txs
+    // which tx.wait() may not catch (e.g. Cartridge session-key txs).
+    try {
+      const provider = this.sdk.getProvider();
+      const receipt = await provider.getTransactionReceipt(txHash);
+      const execStatus = (receipt as any)?.execution_status ?? (receipt as any)?.executionStatus;
+      if (execStatus === "REVERTED") {
+        const reason = (receipt as any)?.revert_reason ?? (receipt as any)?.revertReason ?? "unknown reason";
+        throw new Error(`Transaction reverted on-chain: ${reason}`);
+      }
+    } catch (verifyErr) {
+      // Re-throw our own REVERTED error; swallow RPC fetch failures (non-critical)
+      if (verifyErr instanceof Error && verifyErr.message.includes("reverted on-chain")) {
+        throw verifyErr;
+      }
+    }
+
     return { txHash };
+  }
+
+  private get chainId(): string {
+    return this.network === "mainnet" ? MAINNET_CHAIN_ID : SEPOLIA_CHAIN_ID;
+  }
+
+  private errorMessage(error: unknown): string {
+    // starknet.js v9 nests the actual contract revert reason inside
+    // error.baseError.data.revert_error  (RpcError from simulation / fee estimation)
+    // or error.cause (waitForTransaction).  Extract the human-readable part.
+    const extractRevertReason = (err: unknown): string | null => {
+      if (!err || typeof err !== "object") return null;
+      const obj = err as Record<string, unknown>;
+
+      // RpcError path: baseError.data.revert_error (nested)
+      const baseError = obj.baseError as Record<string, unknown> | undefined;
+      if (baseError?.data && typeof baseError.data === "object") {
+        const data = baseError.data as Record<string, unknown>;
+        let revert = data.revert_error as Record<string, unknown> | string | undefined;
+        // Walk nested .error until we reach a string or a leaf with 'error' as string
+        while (revert && typeof revert === "object") {
+          const inner = (revert as Record<string, unknown>).error;
+          if (typeof inner === "string") {
+            // "0xhex ('Human readable')" → extract quoted part
+            const match = inner.match(/'([^']+)'/);
+            return match ? match[1] : inner;
+          }
+          revert = inner as Record<string, unknown> | string | undefined;
+        }
+        if (typeof revert === "string") {
+          const match = revert.match(/'([^']+)'/);
+          return match ? match[1] : revert;
+        }
+      }
+
+      // Error.cause path (waitForTransaction "Transaction failed")
+      const cause = obj.cause;
+      if (cause) return extractRevertReason(cause);
+
+      return null;
+    };
+
+    const revertReason = extractRevertReason(error);
+    if (revertReason) return revertReason;
+
+    // Fallback: try to extract a quoted reason from the message string
+    if (error instanceof Error) {
+      const match = error.message.match(/'([A-Z][A-Za-z0-9: _<>=]+)'/);
+      if (match) return match[1];
+      // Truncate overly verbose RPC debug messages
+      if (error.message.length > 200) {
+        return error.message.slice(0, 200) + "...";
+      }
+      return error.message;
+    }
+    return String(error);
+  }
+
+  private failedTransaction(error: unknown) {
+    return { txHash: "", success: false as const, error: this.errorMessage(error) };
+  }
+
+  private async submitCalls(
+    calls: Call[],
+    feeMode?: FeeMode,
+  ): Promise<TransactionResult> {
+    try {
+      const { txHash } = await this.exec(calls, feeMode);
+      return { txHash, success: true };
+    } catch (error) {
+      return this.failedTransaction(error);
+    }
   }
 
   // u256::MAX split into (low, high) each u128::MAX — effectively infinite allowance.
@@ -367,17 +463,11 @@ export class MarketZapWallet {
     spenderAddress: string,
     amount: bigint,
   ): Promise<TransactionResult> {
-    try {
-      const call: Call = {
-        contractAddress: tokenAddress,
-        entrypoint: "approve",
-        calldata: [spenderAddress, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    return this.submitCalls([{
+      contractAddress: tokenAddress,
+      entrypoint: "approve",
+      calldata: [spenderAddress, amount.toString(), "0"],
+    }]);
   }
 
   /**
@@ -385,52 +475,39 @@ export class MarketZapWallet {
    */
   async mintAndDeposit(amount: bigint): Promise<TransactionResult> {
     if (!this.wallet) throw new Error("Wallet not connected");
-    try {
-      const address = this.wallet.address.toString();
-      const usdcAddress = getContractAddress("USDC", this.network);
-      const exchangeAddress = getContractAddress("CLOBRouter", this.network);
+    const address = this.wallet.address.toString();
+    const usdcAddress = getContractAddress("USDC", this.network);
+    const exchangeAddress = getContractAddress("CLOBRouter", this.network);
 
-      const mintCall: Call = {
+    return this.submitCalls([
+      {
         contractAddress: usdcAddress,
         entrypoint: "mint",
         calldata: [address, amount.toString(), "0"],
-      };
-      // After mint the new tokens aren't on-chain yet, so allowance check would
-      // undercount — always include approve here (mint + approve + deposit = 3 calls).
-      const approveCall: Call = {
+      },
+      {
         contractAddress: usdcAddress,
         entrypoint: "approve",
         calldata: [exchangeAddress, MarketZapWallet.MAX_APPROVAL_LOW, MarketZapWallet.MAX_APPROVAL_HIGH],
-      };
-      const depositCall: Call = {
+      },
+      {
         contractAddress: exchangeAddress,
         entrypoint: "deposit",
         calldata: [usdcAddress, amount.toString(), "0"],
-      };
-
-      const { txHash } = await this.exec([mintCall, approveCall, depositCall]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+      },
+    ]);
   }
 
   /** Mint test USDC (Sepolia only). */
   async mintTestUSDC(amount: bigint): Promise<TransactionResult> {
     if (!this.wallet) throw new Error("Wallet not connected");
-    try {
-      const address = this.wallet.address.toString();
-      const usdcAddress = getContractAddress("USDC", this.network);
-      const call: Call = {
-        contractAddress: usdcAddress,
-        entrypoint: "mint",
-        calldata: [address, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    const address = this.wallet.address.toString();
+    const usdcAddress = getContractAddress("USDC", this.network);
+    return this.submitCalls([{
+      contractAddress: usdcAddress,
+      entrypoint: "mint",
+      calldata: [address, amount.toString(), "0"],
+    }]);
   }
 
   /** Approve + Deposit in a single gasless multicall. Skips the approve if allowance is already sufficient. */
@@ -439,52 +516,35 @@ export class MarketZapWallet {
     amount: bigint,
   ): Promise<TransactionResult> {
     if (!this.wallet) throw new Error("Wallet not connected");
-    try {
-      const address = this.wallet.address.toString();
-      const exchangeAddress = getContractAddress("CLOBRouter", this.network);
-      const approveCalls = await this.buildApproveIfNeeded(tokenAddress, address, exchangeAddress, amount);
-      const depositCall: Call = {
+    const address = this.wallet.address.toString();
+    const exchangeAddress = getContractAddress("CLOBRouter", this.network);
+    const approveCalls = await this.buildApproveIfNeeded(tokenAddress, address, exchangeAddress, amount);
+    return this.submitCalls([
+      ...approveCalls,
+      {
         contractAddress: exchangeAddress,
         entrypoint: "deposit",
         calldata: [tokenAddress, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([...approveCalls, depositCall]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+      },
+    ]);
   }
 
   /** Deposit collateral into the exchange. */
   async deposit(tokenAddress: string, amount: bigint): Promise<TransactionResult> {
-    try {
-      const exchangeAddress = getContractAddress("CLOBRouter", this.network);
-      const call: Call = {
-        contractAddress: exchangeAddress,
-        entrypoint: "deposit",
-        calldata: [tokenAddress, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    return this.submitCalls([{
+      contractAddress: getContractAddress("CLOBRouter", this.network),
+      entrypoint: "deposit",
+      calldata: [tokenAddress, amount.toString(), "0"],
+    }]);
   }
 
   /** Withdraw collateral from the exchange. */
   async withdraw(tokenAddress: string, amount: bigint): Promise<TransactionResult> {
-    try {
-      const exchangeAddress = getContractAddress("CLOBRouter", this.network);
-      const call: Call = {
-        contractAddress: exchangeAddress,
-        entrypoint: "withdraw",
-        calldata: [tokenAddress, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    return this.submitCalls([{
+      contractAddress: getContractAddress("CLOBRouter", this.network),
+      entrypoint: "withdraw",
+      calldata: [tokenAddress, amount.toString(), "0"],
+    }]);
   }
 
   /** Split position: deposit collateral and receive outcome tokens. */
@@ -493,34 +553,121 @@ export class MarketZapWallet {
     conditionId: string,
     amount: bigint,
   ): Promise<TransactionResult> {
+    return this.submitCalls([{
+      contractAddress: getContractAddress("ConditionalTokens", this.network),
+      entrypoint: "split_position",
+      calldata: [collateralToken, conditionId, amount.toString(), "0"],
+    }]);
+  }
+
+  /** Check if an operator is approved for all ERC-1155 outcome tokens. */
+  async isApprovedForAll(owner: string, operator: string): Promise<boolean> {
+    if (!this.wallet) throw new Error("Wallet not connected");
+    const provider = this.wallet.getProvider();
+    const ct = new Contract({
+      abi: ConditionalTokensABI as any,
+      address: getContractAddress("ConditionalTokens", this.network),
+      providerOrAccount: provider,
+    });
     try {
-      const ctAddress = getContractAddress("ConditionalTokens", this.network);
-      const call: Call = {
-        contractAddress: ctAddress,
-        entrypoint: "split_position",
-        calldata: [collateralToken, conditionId, amount.toString(), "0"],
-      };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
+      const result = await ct.call("is_approved_for_all", [owner, operator]);
+      // OZ ERC-1155 returns a bool (0n/1n or true/false depending on ABI decoding)
+      if (typeof result === "boolean") return result;
+      if (typeof result === "bigint") return result !== 0n;
+      return !!result;
+    } catch {
+      return false; // Assume not approved if RPC fails
     }
+  }
+
+  /**
+   * Ensure the exchange is approved to transfer the user's ERC-1155 outcome
+   * tokens.  Required before selling shares — the on-chain `settle_trade`
+   * calls `safe_transfer_from(seller, buyer, …)` which needs operator approval.
+   *
+   * Returns immediately (no tx) if already approved.
+   */
+  async ensureExchangeApprovedForSell(): Promise<TransactionResult> {
+    if (!this.wallet) throw new Error("Wallet not connected");
+    const owner = this.wallet.address.toString();
+    const exchange = getContractAddress("CLOBRouter", this.network);
+    const approved = await this.isApprovedForAll(owner, exchange);
+    if (approved) {
+      return { txHash: "", success: true };
+    }
+    return this.setApprovalForAll(exchange, true);
   }
 
   /** Set approval for all ERC-1155 outcome tokens. */
   async setApprovalForAll(operator: string, approved: boolean): Promise<TransactionResult> {
-    try {
-      const ctAddress = getContractAddress("ConditionalTokens", this.network);
-      const call: Call = {
-        contractAddress: ctAddress,
-        entrypoint: "set_approval_for_all",
-        calldata: [operator, approved ? "1" : "0"],
+    return this.submitCalls([{
+      contractAddress: getContractAddress("ConditionalTokens", this.network),
+      entrypoint: "set_approval_for_all",
+      calldata: [operator, approved ? "1" : "0"],
+    }]);
+  }
+
+  private buildCreateMarketCall(
+    factoryAddress: string,
+    resolverAddress: string,
+    params: {
+      question: string;
+      category: string;
+      outcomes: string[];
+      collateralToken: string;
+      resolutionTime: number;
+      marketType?: "public" | "private";
+    },
+  ): Call {
+    const categoryHash = hash.getSelectorFromName(params.category);
+    const outcomeFelts = params.outcomes.map((outcome) => hash.getSelectorFromName(outcome));
+    const marketTypeU8 = params.marketType === "private" ? 1 : 0;
+    const createArgs = [
+      params.question,
+      outcomeFelts,
+      categoryHash,
+      params.collateralToken,
+      params.resolutionTime,
+      resolverAddress,
+      marketTypeU8,
+    ];
+
+    // Browser wallets (Braavos/ArgentX) may recompile calldata inside execute().
+    // To avoid double-compilation of complex types (ByteArray, Span), we
+    // pre-compile into a flat string[] that wallets pass through as-is.
+    if (this.connectionKind === "external") {
+      const ba = byteArray.byteArrayFromString(params.question);
+      const compiledCalldata: string[] = [
+        // ByteArray: [data.length, ...data, pending_word, pending_word_len]
+        ba.data.length.toString(),
+        ...ba.data.map((d) => d.toString()),
+        ba.pending_word.toString(),
+        ba.pending_word_len.toString(),
+        // Span<felt252>: [length, ...elements]
+        outcomeFelts.length.toString(),
+        ...outcomeFelts,
+        // Remaining scalar params
+        categoryHash,
+        params.collateralToken,
+        params.resolutionTime.toString(),
+        resolverAddress,
+        marketTypeU8.toString(),
+      ];
+      return {
+        contractAddress: factoryAddress,
+        entrypoint: "create_market",
+        calldata: compiledCalldata,
       };
-      const { txHash } = await this.exec([call]);
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
     }
+
+    const account = this.wallet!.getAccount();
+    const factory = new Contract({
+      abi: MarketFactoryABI as any,
+      address: factoryAddress,
+      providerOrAccount: account,
+    });
+
+    return factory.populate("create_market", createArgs);
   }
 
   /** Create a prediction market via MarketFactory. */
@@ -536,16 +683,11 @@ export class MarketZapWallet {
     try {
       const factoryAddress = getContractAddress("MarketFactory", this.network);
       const resolverAddress = getContractAddress("Resolver", this.network);
-      const categoryHash = hash.getSelectorFromName(params.category);
-      const outcomeFelts = params.outcomes.map((o) => hash.getSelectorFromName(o));
-
-      const account = this.wallet.getAccount();
-      const factory = new Contract({ abi: MarketFactoryABI as any, address: factoryAddress, providerOrAccount: account });
-      const marketTypeU8 = params.marketType === "private" ? 1 : 0;
-      const createCall = factory.populate("create_market", [
-        params.question, outcomeFelts, categoryHash,
-        params.collateralToken, params.resolutionTime, resolverAddress, marketTypeU8,
-      ]);
+      const createCall = this.buildCreateMarketCall(
+        factoryAddress,
+        resolverAddress,
+        params,
+      );
 
       const { txHash } = await this.exec([createCall]);
 
@@ -557,7 +699,7 @@ export class MarketZapWallet {
       );
       return { txHash, success: true, marketId, conditionId };
     } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
+      return this.failedTransaction(err);
     }
   }
 
@@ -578,21 +720,46 @@ export class MarketZapWallet {
     try {
       const factoryAddress = getContractAddress("MarketFactory", this.network);
       const resolverAddress = getContractAddress("Resolver", this.network);
-      const categoryHash = hash.getSelectorFromName(params.category);
-      const outcomeFelts = params.outcomes.map((o) => hash.getSelectorFromName(o));
 
       const address = this.wallet.address.toString();
-      const account = this.wallet.getAccount();
-      const factory = new Contract({ abi: MarketFactoryABI as any, address: factoryAddress, providerOrAccount: account });
+
+      // Pre-flight: verify the user has enough bond tokens before hitting the wallet.
+      // This gives a clear error instead of a cryptic "Execute failed" from the sequencer.
+      try {
+        const provider = this.wallet.getProvider();
+        const token = new Contract({ abi: ERC20ABI as any, address: bondTokenAddress, providerOrAccount: provider });
+        const raw = await token.call("balance_of", [address]);
+        let balance: bigint;
+        if (typeof raw === "bigint") {
+          balance = raw;
+        } else if (raw && typeof raw === "object") {
+          const low = BigInt((raw as any).low ?? 0n);
+          const high = BigInt((raw as any).high ?? 0n);
+          balance = (high << 128n) + low;
+        } else {
+          balance = BigInt(String(raw));
+        }
+        if (balance < bondAmount) {
+          const decimals = 6; // USDC
+          const have = (Number(balance) / 10 ** decimals).toFixed(2);
+          const need = (Number(bondAmount) / 10 ** decimals).toFixed(2);
+          return {
+            txHash: "", success: false,
+            error: `Insufficient USDC balance: you have ${have} but need ${need} for the bond`,
+          };
+        }
+      } catch {
+        // RPC balance check failed — proceed and let the chain decide
+      }
 
       // Only emit approve if the factory's current allowance is below the bond amount.
       // On re-use (same address, same factory), this skips the approve entirely.
       const approveCalls = await this.buildApproveIfNeeded(bondTokenAddress, address, factoryAddress, bondAmount);
-      const marketTypeU8 = params.marketType === "private" ? 1 : 0;
-      const createCall = factory.populate("create_market", [
-        params.question, outcomeFelts, categoryHash,
-        params.collateralToken, params.resolutionTime, resolverAddress, marketTypeU8,
-      ]);
+      const createCall = this.buildCreateMarketCall(
+        factoryAddress,
+        resolverAddress,
+        params,
+      );
 
       const { txHash } = await this.exec([...approveCalls, createCall]);
 
@@ -604,38 +771,24 @@ export class MarketZapWallet {
       );
       return { txHash, success: true, marketId, conditionId };
     } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
+      return this.failedTransaction(err);
     }
   }
 
-  async proposeOutcome(marketId: string, outcomeIndex: number): Promise<TransactionResult> {
-    try {
-      const resolverAddress = getContractAddress("Resolver", this.network);
-      const call: Call = {
-        contractAddress: resolverAddress,
-        entrypoint: "propose_outcome",
-        calldata: [marketId, outcomeIndex.toString()],
-      };
-      const { txHash } = await this.exec([call], "user_pays");
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  async proposeOutcome(marketId: string, conditionId: string, outcomeIndex: number): Promise<TransactionResult> {
+    return this.submitCalls([{
+      contractAddress: getContractAddress("Resolver", this.network),
+      entrypoint: "propose_outcome",
+      calldata: [marketId, conditionId, outcomeIndex.toString()],
+    }], "user_pays");
   }
 
-  async finalizeResolution(marketId: string): Promise<TransactionResult> {
-    try {
-      const resolverAddress = getContractAddress("Resolver", this.network);
-      const call: Call = {
-        contractAddress: resolverAddress,
-        entrypoint: "finalize_resolution",
-        calldata: [marketId],
-      };
-      const { txHash } = await this.exec([call], "user_pays");
-      return { txHash, success: true };
-    } catch (err) {
-      return { txHash: "", success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  async finalizeResolution(marketId: string, conditionId: string): Promise<TransactionResult> {
+    return this.submitCalls([{
+      contractAddress: getContractAddress("Resolver", this.network),
+      entrypoint: "finalize_resolution",
+      calldata: [marketId, conditionId],
+    }], "user_pays");
   }
 
   async redeemPosition(
@@ -652,7 +805,7 @@ export class MarketZapWallet {
       const { txHash } = await this.exec([call]);
       return { txHash, success: true };
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
+      const raw = this.errorMessage(err);
       const ctMatch = raw.match(/CT:\s*([^'"\n]+)/);
       const errorMsg = ctMatch
         ? `Contract error: ${ctMatch[1].trim()}`
@@ -668,8 +821,7 @@ export class MarketZapWallet {
   signOrder(order: OrderHashParams): string {
     if (!this.privateKey) throw new Error("Order signing requires a private key connection");
     const exchangeAddress = getContractAddress("CLOBRouter", this.network);
-    const chainId = this.network === "mainnet" ? "0x534e5f4d41494e" : "0x534e5f5345504f4c4941";
-    const orderHash = computeOrderHash(order, exchangeAddress, chainId);
+    const orderHash = computeOrderHash(order, exchangeAddress, this.chainId);
     const sig = signOrderHash(orderHash, this.privateKey);
     return formatSignature(sig);
   }
@@ -678,8 +830,7 @@ export class MarketZapWallet {
     if (this.privateKey) return this.signOrder(order);
     if (!this.wallet) throw new Error("No wallet connected for order signing");
 
-    const chainId = this.network === "mainnet" ? "0x534e5f4d41494e" : "0x534e5f5345504f4c4941";
-    const td = buildOrderTypedData(order, chainId);
+    const td = buildOrderTypedData(order, this.chainId);
     const sig: Signature = await this.wallet.signMessage(td);
 
     if (Array.isArray(sig)) {
@@ -703,8 +854,7 @@ export class MarketZapWallet {
 
   getOrderHash(order: OrderHashParams): string {
     const exchangeAddress = getContractAddress("CLOBRouter", this.network);
-    const chainId = this.network === "mainnet" ? "0x534e5f4d41494e" : "0x534e5f5345504f4c4941";
-    return computeOrderHash(order, exchangeAddress, chainId);
+    return computeOrderHash(order, exchangeAddress, this.chainId);
   }
 
   async getTokenBalance(tokenAddress: string, userAddress: string): Promise<bigint> {

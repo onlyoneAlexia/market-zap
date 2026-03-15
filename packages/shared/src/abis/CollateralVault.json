@@ -26,6 +26,13 @@
         "inputs": [],
         "outputs": [],
         "state_mutability": "external"
+      },
+      {
+        "type": "function",
+        "name": "cancel_upgrade",
+        "inputs": [],
+        "outputs": [],
+        "state_mutability": "external"
       }
     ]
   },
@@ -87,7 +94,11 @@
             "type": "core::integer::u256"
           }
         ],
-        "outputs": [],
+        "outputs": [
+          {
+            "type": "core::integer::u256"
+          }
+        ],
         "state_mutability": "external"
       },
       {
@@ -428,6 +439,29 @@
   },
   {
     "type": "event",
+    "name": "market_zap::collateral_vault::CollateralVault::UpgradeProposed",
+    "kind": "struct",
+    "members": [
+      {
+        "name": "new_class_hash",
+        "type": "core::starknet::class_hash::ClassHash",
+        "kind": "data"
+      },
+      {
+        "name": "proposed_at",
+        "type": "core::integer::u64",
+        "kind": "data"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "market_zap::collateral_vault::CollateralVault::UpgradeCancelled",
+    "kind": "struct",
+    "members": []
+  },
+  {
+    "type": "event",
     "name": "market_zap::collateral_vault::CollateralVault::Event",
     "kind": "enum",
     "variants": [
@@ -464,6 +498,16 @@
       {
         "name": "TokenRemoved",
         "type": "market_zap::collateral_vault::CollateralVault::TokenRemoved",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeProposed",
+        "type": "market_zap::collateral_vault::CollateralVault::UpgradeProposed",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeCancelled",
+        "type": "market_zap::collateral_vault::CollateralVault::UpgradeCancelled",
         "kind": "nested"
       }
     ]

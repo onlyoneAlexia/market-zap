@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Spinner, LockKey } from "@phosphor-icons/react";
 import { MarketHeader } from "@/components/market/market-header";
+import { CreatedMarketBanner } from "@/components/market/created-market-banner";
 import { LatencyBadge } from "@/components/trading/latency-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,6 +16,7 @@ import { MyOrders } from "@/components/trading/my-orders";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-client";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { visibleRefetchInterval } from "@/lib/polling";
 
 const PriceChart = dynamic(
   () =>
@@ -72,8 +75,17 @@ function formatPct(price: string | null | undefined): string {
   return `${(n * 100).toFixed(1)}%`;
 }
 
+function formatProbability(price: number | null | undefined): string {
+  if (price == null || !Number.isFinite(price)) return "--";
+  return `${(price * 100).toFixed(1)}%`;
+}
+
 export function MarketDetailClient({ id }: { id: string }) {
-  const { data: market, isLoading, error } = useMarket(id);
+  const searchParams = useSearchParams();
+  const pendingIndexing = searchParams.get("indexing") === "1";
+  const { data: market, isLoading, error } = useMarket(id, {
+    refetchInterval: pendingIndexing ? visibleRefetchInterval(3_000) : false,
+  });
   const { data: tradesData } = useMarketTrades(id);
   const isMobile = useMediaQuery("(max-width: 1023px)");
 
@@ -97,14 +109,8 @@ export function MarketDetailClient({ id }: { id: string }) {
     enabled: false,
   });
 
-  const outcomes = useMemo(
-    () => market?.outcomes.map((o) => o.label) ?? [],
-    [market?.outcomes],
-  );
-  const prices = useMemo(
-    () => market?.outcomes.map((o) => parseFloat(o.price)) ?? [],
-    [market?.outcomes],
-  );
+  const outcomes = useMemo(() => market?.outcomes.map((o) => o.label) ?? [], [market?.outcomes]);
+  const prices = useMemo(() => market?.outcomes.map((o) => parseFloat(o.price)) ?? [], [market?.outcomes]);
   const trades = useMemo(
     () =>
       (tradesData?.items ?? []).map((t) => ({
@@ -113,9 +119,7 @@ export function MarketDetailClient({ id }: { id: string }) {
         amount: t.amount,
         fee: t.fee,
         side: (parseFloat(t.price) >= 0.5 ? "buy" : "sell") as "buy" | "sell",
-        timestamp: t.timestamp
-          ? new Date(t.timestamp).getTime() / 1000
-          : Date.now() / 1000,
+        timestamp: t.timestamp ? new Date(t.timestamp).getTime() / 1000 : Date.now() / 1000,
         outcome: outcomes[t.outcomeIndex] ?? "Yes",
         settled: t.settled,
         settlementStatus: t.settlementStatus,
@@ -152,6 +156,34 @@ export function MarketDetailClient({ id }: { id: string }) {
   }
 
   if (error || !market) {
+    if (pendingIndexing) {
+      return (
+        <div className="container mx-auto max-w-screen-xl px-4 py-10">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-mono font-bold tracking-wider text-primary">
+                Waiting for indexer
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Spinner className="h-4 w-4 animate-spin text-primary" weight="bold" />
+                <span>
+                  Your market exists on Sepolia, but it is not in the engine DB yet.
+                  This page retries automatically every few seconds.
+                </span>
+              </div>
+              <p className="font-mono text-[11px] text-primary">Market ID: {id}</p>
+              <p>
+                Once the indexer catches up, this page will switch to the live market view
+                without another create or seed step.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center py-20 text-sm text-muted-foreground">
         <p>Market not found</p>
@@ -160,8 +192,13 @@ export function MarketDetailClient({ id }: { id: string }) {
   }
 
   const isDark = market.marketType === "private";
-  const bestBid = (quote0?.bestBid != null) ? formatPct(quote0.bestBid) : (prices[0] ? `${(prices[0] * 100).toFixed(1)}%` : "--");
-  const bestAsk = (quote0?.bestAsk != null) ? formatPct(quote0.bestAsk) : (prices[0] ? `${(prices[0] * 100 + 1).toFixed(1)}%` : "--");
+  const isFreshlyCreated = searchParams.get("created") === "1";
+  const showShareBanner = isFreshlyCreated || searchParams.get("share") === "1";
+  const primaryPrice = prices[0] ?? null;
+  const volume24h = formatVolume(market.volume24h ?? market.totalVolume);
+  const bestBid = quote0?.bestBid != null ? formatPct(quote0.bestBid) : formatProbability(primaryPrice);
+  const bestAsk =
+    quote0?.bestAsk != null ? formatPct(quote0.bestAsk) : formatProbability(primaryPrice == null ? null : primaryPrice + 0.01);
   const spread = quote0?.spread ? `${(Number(quote0.spread) * 100).toFixed(2)}%` : "1.0%";
   const tradePanelProps = {
     marketId: id,
@@ -175,10 +212,31 @@ export function MarketDetailClient({ id }: { id: string }) {
     voided: market.voided,
     resolvedOutcomeIndex: market.resolvedOutcomeIndex,
   };
+  const aboutMarketCard = (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-[10px] font-mono font-bold tracking-wider text-muted-foreground">About This Market</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm text-muted-foreground">
+        <p>{market.description}</p>
+        <div>
+          <div className="mb-1 text-[10px] font-mono font-bold tracking-wider text-primary">Execution Policy</div>
+          <p>
+            Orders are matched off-chain using price-time priority. Each trade is individually settled on Starknet. 0% maker fee, 1% taker
+            fee. Order privacy: no participant can see others&apos; pending orders.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
 
   return (
     <PageTransition>
       <div className="container mx-auto max-w-screen-xl px-4 py-6">
+        {showShareBanner ? (
+          <CreatedMarketBanner marketId={id} isPrivate={isDark} />
+        ) : null}
+
         {isDark ? (
           <div className="mb-4 flex items-center gap-2 rounded border border-cyan/20 bg-cyan/5 px-4 py-3 text-[11px] font-mono">
             <LockKey className="h-4 w-4 text-cyan" weight="duotone" />
@@ -188,6 +246,19 @@ export function MarketDetailClient({ id }: { id: string }) {
             </span>
           </div>
         ) : null}
+
+        {market.thumbnailUrl && (
+          <div className="mb-4 rounded overflow-hidden border border-border">
+            <img
+              src={market.thumbnailUrl}
+              alt=""
+              className="w-full h-40 object-cover"
+              onError={(e) => {
+                (e.target as HTMLImageElement).parentElement!.style.display = "none";
+              }}
+            />
+          </div>
+        )}
 
         <MarketHeader
           question={market.question}
@@ -208,12 +279,7 @@ export function MarketDetailClient({ id }: { id: string }) {
         <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
           <div className="space-y-6">
             <div className="relative">
-              <PriceChart
-                marketId={id}
-                outcomes={outcomes}
-                currentPrices={prices}
-                isDark={isDark}
-              />
+              <PriceChart marketId={id} outcomes={outcomes} currentPrices={prices} isDark={isDark} />
               {isDark && (
                 <div className="absolute inset-0 flex items-end justify-center rounded-lg bg-gradient-to-t from-background/80 via-transparent to-transparent pointer-events-none">
                   <div className="mb-4 flex items-center gap-1.5 rounded border border-cyan/20 bg-background/90 px-3 py-1.5 text-[10px] font-mono tracking-wider text-muted-foreground backdrop-blur-sm">
@@ -235,53 +301,31 @@ export function MarketDetailClient({ id }: { id: string }) {
                 {isDark ? (
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        24h Volume
-                      </div>
-                      <div className="font-mono text-sm font-semibold">
-                        {formatVolume(market.volume24h ?? market.totalVolume)}
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">24h Volume</div>
+                      <div className="font-mono text-sm font-semibold">{volume24h}</div>
                     </div>
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        Orderbook
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">Orderbook</div>
                       <div className="text-sm text-muted-foreground">Hidden</div>
                     </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        Best Bid
-                      </div>
-                      <div className="font-mono text-sm font-semibold text-yes">
-                        {bestBid}
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">Best Bid</div>
+                      <div className="font-mono text-sm font-semibold text-yes">{bestBid}</div>
                     </div>
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        Best Ask
-                      </div>
-                      <div className="font-mono text-sm font-semibold text-no">
-                        {bestAsk}
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">Best Ask</div>
+                      <div className="font-mono text-sm font-semibold text-no">{bestAsk}</div>
                     </div>
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        Spread
-                      </div>
-                      <div className="font-mono text-sm font-semibold">
-                        {spread}
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">Spread</div>
+                      <div className="font-mono text-sm font-semibold">{spread}</div>
                     </div>
                     <div>
-                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">
-                        24h Volume
-                      </div>
-                      <div className="font-mono text-sm font-semibold">
-                        {formatVolume(market.volume24h ?? market.totalVolume)}
-                      </div>
+                      <div className="text-[10px] font-mono tracking-wider text-muted-foreground">24h Volume</div>
+                      <div className="font-mono text-sm font-semibold">{volume24h}</div>
                     </div>
                   </div>
                 )}
@@ -301,26 +345,7 @@ export function MarketDetailClient({ id }: { id: string }) {
             {isMobile ? (
               <>
                 <MyOrders marketId={id} collateralToken={market.collateralToken} />
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-[10px] font-mono font-bold tracking-wider text-muted-foreground">About This Market</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm text-muted-foreground">
-                    <p>{market.description}</p>
-                    <div>
-                      <div className="mb-1 text-[10px] font-mono font-bold tracking-wider text-primary">
-                        Execution Policy
-                      </div>
-                      <p>
-                        Orders are matched off-chain using price-time priority.
-                        Each trade is individually settled on Starknet. 0% maker
-                        fee, 1% taker fee. Order privacy: no participant can see
-                        others' pending orders.
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
+                {aboutMarketCard}
               </>
             ) : null}
           </div>
@@ -331,25 +356,7 @@ export function MarketDetailClient({ id }: { id: string }) {
 
               <MyOrders marketId={id} collateralToken={market.collateralToken} />
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-[10px] font-mono font-bold tracking-wider text-muted-foreground">About This Market</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p>{market.description}</p>
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-foreground">
-                      Execution Policy
-                    </div>
-                    <p>
-                      Orders are matched off-chain using price-time priority.
-                      Each trade is individually settled on Starknet. 0% maker
-                      fee, 1% taker fee. Order privacy: no participant can see
-                      others' pending orders.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
+              {aboutMarketCard}
             </div>
           ) : null}
         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useRef, useEffect, startTransition } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { MarketFilters } from "@/components/market/market-filters";
 import { MarketGrid } from "@/components/market/market-grid";
@@ -31,51 +31,50 @@ export function MarketsPageClient() {
   const [category, setCategory] = useState("all");
   const [sort, setSort] = useState("trending");
   const [search, setSearch] = useState("");
-  const [marketType, setMarketType] = useState("all");
+  const [marketType, setMarketType] = useState<"all" | "public" | "private">("all");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const handleSearchChange = useCallback((value: string) => {
-    setSearch(value);
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      startTransition(() => {
-        setDebouncedSearch(value);
-      });
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
     }, 300);
-  }, []);
 
-  useEffect(() => () => clearTimeout(debounceRef.current), []);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [search]);
 
   const filters = useMemo<GetMarketsParams>(
     () => ({
       ...DEFAULT_MARKETS_QUERY_FILTERS,
       category: category !== "all" ? category : undefined,
+      marketType: marketType !== "all" ? marketType : undefined,
       search: debouncedSearch || undefined,
       sortBy: getSortBy(sort),
     }),
-    [category, debouncedSearch, sort],
+    [category, debouncedSearch, marketType, sort],
   );
 
   const { data, isLoading, error } = useMarkets(filters);
 
-  const markets = useMemo(() => {
-    const all = (data?.items ?? []).map((m) => ({
-      id: m.id,
-      question: m.question,
-      category: m.category,
-      outcomes: m.outcomes.map((o) => o.label),
-      prices: m.outcomes.map((o) => parseFloat(o.price)),
-      volume: formatVolume(m.totalVolume),
-      endsAt: m.resolutionTime,
-      traders: m.traders ?? 0,
-      marketType: m.marketType,
-      resolved: m.resolved,
-      voided: m.voided,
-    }));
-    if (marketType === "all") return all;
-    return all.filter((m) => (m.marketType ?? "public") === marketType);
-  }, [data, marketType]);
+  const markets = useMemo(
+    () =>
+      (data?.items ?? []).map((m) => ({
+        id: m.id,
+        question: m.question,
+        category: m.category,
+        outcomes: m.outcomes.map((o) => o.label),
+        prices: m.outcomes.map((o) => parseFloat(o.price)),
+        volume: formatVolume(m.totalVolume),
+        endsAt: m.resolutionTime,
+        traders: m.traders ?? 0,
+        marketType: m.marketType,
+        resolved: m.resolved,
+        voided: m.voided,
+        thumbnailUrl: m.thumbnailUrl,
+      })),
+    [data],
+  );
 
   return (
     <PageTransition>
@@ -88,7 +87,7 @@ export function MarketsPageClient() {
               type="text"
               placeholder="Search markets..."
               value={search}
-              onChange={(e) => handleSearchChange(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               className="bg-transparent text-cyan font-mono text-xs w-full focus:outline-none placeholder:text-muted-foreground"
             />
           </div>
@@ -107,7 +106,7 @@ export function MarketsPageClient() {
           selectedSort={sort}
           onSortChange={setSort}
           selectedMarketType={marketType}
-          onMarketTypeChange={setMarketType}
+          onMarketTypeChange={(nextMarketType) => setMarketType(nextMarketType as "all" | "public" | "private")}
         />
 
         {/* Data table */}
@@ -119,7 +118,7 @@ export function MarketsPageClient() {
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <p className="text-sm font-mono text-muted-foreground">Failed to load markets</p>
                 <p className="mt-1 text-[10px] font-mono text-muted-foreground/60">
-                  Engine: {process.env.NEXT_PUBLIC_ENGINE_URL || "http://localhost:3001"}
+                  The engine may still be warming up. Refresh or try again in a moment.
                 </p>
               </div>
             </div>

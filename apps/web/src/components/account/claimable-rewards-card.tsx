@@ -44,7 +44,7 @@ export function ClaimableRewardsCard() {
         onSuccess: (result) => {
           toast({
             title: "Reward claimed!",
-            description: `Transaction confirmed: ${shortenAddress(result.txHash)}`,
+            description: `Submitted on-chain: ${shortenAddress(result.txHash)}. The indexer will confirm it in the engine shortly.`,
             variant: "success",
           });
         },

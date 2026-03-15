@@ -133,6 +133,16 @@
     ]
   },
   {
+    "type": "struct",
+    "name": "core::array::Span::<core::felt252>",
+    "members": [
+      {
+        "name": "snapshot",
+        "type": "@core::array::Array::<core::felt252>"
+      }
+    ]
+  },
+  {
     "type": "interface",
     "name": "market_zap::interfaces::i_clob_exchange::ICLOBExchange",
     "items": [
@@ -203,6 +213,10 @@
           {
             "name": "expiry",
             "type": "core::integer::u128"
+          },
+          {
+            "name": "market_id",
+            "type": "core::integer::u64"
           }
         ],
         "outputs": [],
@@ -249,20 +263,12 @@
             "type": "core::integer::u256"
           },
           {
-            "name": "maker_sig_r",
-            "type": "core::felt252"
+            "name": "maker_signature",
+            "type": "core::array::Span::<core::felt252>"
           },
           {
-            "name": "maker_sig_s",
-            "type": "core::felt252"
-          },
-          {
-            "name": "taker_sig_r",
-            "type": "core::felt252"
-          },
-          {
-            "name": "taker_sig_s",
-            "type": "core::felt252"
+            "name": "taker_signature",
+            "type": "core::array::Span::<core::felt252>"
           }
         ],
         "outputs": [],
@@ -465,6 +471,37 @@
           {
             "name": "trade_commitment",
             "type": "core::felt252"
+          }
+        ],
+        "outputs": [],
+        "state_mutability": "external"
+      }
+    ]
+  },
+  {
+    "type": "impl",
+    "name": "ForceReleaseImpl",
+    "interface_name": "market_zap::clob_exchange::ICLOBForceRelease"
+  },
+  {
+    "type": "interface",
+    "name": "market_zap::clob_exchange::ICLOBForceRelease",
+    "items": [
+      {
+        "type": "function",
+        "name": "force_release_after_resolution",
+        "inputs": [
+          {
+            "name": "market_id",
+            "type": "core::integer::u64"
+          },
+          {
+            "name": "token",
+            "type": "core::starknet::contract_address::ContractAddress"
+          },
+          {
+            "name": "nonce",
+            "type": "core::integer::u256"
           }
         ],
         "outputs": [],
@@ -953,6 +990,29 @@
   },
   {
     "type": "event",
+    "name": "market_zap::clob_exchange::CLOBExchange::UpgradeProposed",
+    "kind": "struct",
+    "members": [
+      {
+        "name": "new_class_hash",
+        "type": "core::starknet::class_hash::ClassHash",
+        "kind": "data"
+      },
+      {
+        "name": "proposed_at",
+        "type": "core::integer::u64",
+        "kind": "data"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "market_zap::clob_exchange::CLOBExchange::UpgradeCancelled",
+    "kind": "struct",
+    "members": []
+  },
+  {
+    "type": "event",
     "name": "market_zap::clob_exchange::CLOBExchange::Event",
     "kind": "enum",
     "variants": [
@@ -1034,6 +1094,16 @@
       {
         "name": "FeesUpdated",
         "type": "market_zap::clob_exchange::CLOBExchange::FeesUpdated",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeProposed",
+        "type": "market_zap::clob_exchange::CLOBExchange::UpgradeProposed",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeCancelled",
+        "type": "market_zap::clob_exchange::CLOBExchange::UpgradeCancelled",
         "kind": "nested"
       }
     ]

@@ -34,8 +34,13 @@ export function registerMarketRoutes(
         return;
       }
 
-      const { limit, offset, category, status } = parsed.data;
-      const rows = await context.deps.db.getMarkets(limit, offset, category, status);
+      const { limit, offset, category, status, marketType, sortBy, sortOrder, search } = parsed.data;
+      const rows = await context.deps.db.getMarkets(limit, offset, category, status, {
+        marketType,
+        sortBy,
+        sortOrder,
+        search,
+      });
       const traderCounts = await context.deps.db.getTraderCountsByMarket(
         rows.map((row) => row.market_id),
         context.deps.settler.adminAddr,
@@ -57,8 +62,7 @@ export function registerMarketRoutes(
           }
         }
 
-        const isPrivate = row.market_type === "private";
-        return { ...market, traders: isPrivate ? 0 : traders };
+        return { ...market, traders };
       });
 
       ok(res, paginated(markets, markets.length, Math.floor(offset / limit), limit));
@@ -116,17 +120,12 @@ export function registerMarketRoutes(
         }
       }
 
-      const isPrivate = row.market_type === "private";
       const [traderCount, rawHistory] = await Promise.all([
-        isPrivate
-          ? Promise.resolve(0)
-          : context.deps.db.getTraderCount(
-              row.market_id,
-              context.deps.settler.adminAddr,
-            ),
-        isPrivate
-          ? Promise.resolve([])
-          : context.deps.db.getPriceHistory(row.market_id, 0, "1h", 168),
+        context.deps.db.getTraderCount(
+          row.market_id,
+          context.deps.settler.adminAddr,
+        ),
+        context.deps.db.getPriceHistory(row.market_id, row.outcome_count, "1h", 168),
       ]);
 
       ok(res, {
@@ -183,14 +182,15 @@ export function registerMarketRoutes(
 
       const market = await context.deps.db.getMarketById(req.params.id as string);
       const marketId = market?.market_id ?? (req.params.id as string);
-      const { outcomeIndex, interval, limit } = parsed.data;
+      const { interval, limit } = parsed.data;
       const isPrivate = market?.market_type === "private";
+      const outcomeCount = market?.outcome_count ?? 2;
 
       const [stats, rawHistory] = await Promise.all([
         context.deps.db.getMarketStats(marketId),
         isPrivate
           ? Promise.resolve([])
-          : context.deps.db.getPriceHistory(marketId, outcomeIndex, interval, limit),
+          : context.deps.db.getPriceHistory(marketId, outcomeCount, interval, limit),
       ]);
 
       ok(res, {
@@ -445,11 +445,41 @@ export function registerMarketRoutes(
                   pendingSellAmount +
                   openOutcomeReservations +
                   adminOutcomeConsumedByClob;
-                const available =
+                const outcomeAvailable =
                   rawAdminOutcomeBalance > totalHeld
                     ? rawAdminOutcomeBalance - totalHeld
                     : 0n;
-                ammRequest = Math.min(ammRequest, Number(available) / divisor);
+
+                // Account for auto-split: settlement can mint outcome tokens
+                // from admin USDC, so the effective AMM capacity is outcome
+                // balance + USDC available for splitting.
+                let effectiveCapacity = outcomeAvailable;
+                if (Number(outcomeAvailable) / divisor < remaining) {
+                  try {
+                    const [adminWalletBal, adminExchangeBal] =
+                      await Promise.all([
+                        context.deps.balanceChecker.checkWalletBalance(
+                          context.deps.settler.adminAddr,
+                          market.collateral_token,
+                        ),
+                        context.deps.balanceChecker
+                          .checkBalance(
+                            context.deps.settler.adminAddr,
+                            market.collateral_token,
+                          )
+                          .catch(() => 0n),
+                      ]);
+                    // Splitting X USDC mints X tokens of each outcome.
+                    effectiveCapacity =
+                      outcomeAvailable + adminWalletBal + adminExchangeBal;
+                  } catch {
+                    // Keep effectiveCapacity at outcomeAvailable only.
+                  }
+                }
+                ammRequest = Math.min(
+                  ammRequest,
+                  Number(effectiveCapacity) / divisor,
+                );
               } catch (error) {
                 console.warn(
                   "[quote] failed admin outcome-inventory check; capping AMM fill to 0",

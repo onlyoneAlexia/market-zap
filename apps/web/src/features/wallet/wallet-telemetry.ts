@@ -4,7 +4,7 @@ import type { WalletConnectionPhase } from "./wallet-connection-status";
 import type { WalletProvider } from "./wallet-provider";
 
 const ENGINE_TELEMETRY_URL = (
-  process.env.NEXT_PUBLIC_ENGINE_URL || "http://localhost:3001/api"
+  process.env.NEXT_PUBLIC_ENGINE_URL || "/engine-api"
 ).replace(/\/+$/, "");
 
 export type WalletTelemetryEventName =

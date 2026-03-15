@@ -11,13 +11,14 @@ export interface MarketRow {
   collateral_token: string;
   resolution_source: string;
   resolution_time: Date | null;
-  status: "ACTIVE" | "PAUSED" | "RESOLVED" | "VOIDED";
+  status: "ACTIVE" | "PAUSED" | "PROPOSED" | "RESOLVED" | "VOIDED";
   winning_outcome: number | null;
   total_volume: string;
   liquidity: string;
   created_at: Date;
   updated_at: Date;
   market_type: "public" | "private";
+  thumbnail_url: string | null;
 }
 
 export interface TradeRow {

@@ -192,5 +192,7 @@ export const TradeSchema = z.object({
   fee: z.string(),
   txHash: z.string().nullable(),
   settled: z.boolean().optional().default(false),
+  settlementStatus: z.enum(["pending", "settled", "failed"]).optional(),
+  settlementError: z.string().nullable().optional(),
   timestamp: z.string().datetime(),
 });

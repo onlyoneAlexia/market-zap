@@ -14,8 +14,14 @@ export function useMarkets(filters?: GetMarketsParams) {
   return useQuery(getMarketsQueryOptions(filters));
 }
 
-export function useMarket(id: string) {
-  return useQuery(getMarketQueryOptions(id));
+export function useMarket(
+  id: string,
+  options?: { refetchInterval?: number | false },
+) {
+  return useQuery({
+    ...getMarketQueryOptions(id),
+    refetchInterval: options?.refetchInterval,
+  });
 }
 
 export function useMarketStats(id: string) {

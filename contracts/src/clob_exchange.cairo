@@ -85,7 +85,9 @@ pub mod CLOBExchange {
     const U256_TYPE_HASH: felt252 =
         0x3b143be38b811560b45593fb2a071ec4ddd0a020e10782be62ffe6f39e0e82c;
     const DOMAIN_NAME: felt252 = 'MarketZap';
-    const DOMAIN_VERSION: felt252 = '1';
+    // Use integer 1, not shortstring '1' (0x31). starknet.js encodes
+    // domain { version: "1" } as felt 0x1 via toHex("1"), so Cairo must match.
+    const DOMAIN_VERSION: felt252 = 1;
 
     // -----------------------------------------------------------------
     //  Storage
@@ -128,6 +130,12 @@ pub mod CLOBExchange {
         reservation_amounts: Map<(ContractAddress, u256), u256>,
         /// (user, nonce) -> expiry timestamp for per-nonce reservation tracking.
         reservation_expiries: Map<(ContractAddress, u256), u128>,
+        /// (user, nonce) -> token address reserved under this nonce.
+        reservation_tokens: Map<(ContractAddress, u256), ContractAddress>,
+        /// (user, nonce) -> market_id this reservation is for.
+        reservation_market_ids: Map<(ContractAddress, u256), u64>,
+        /// Dark trade nonce tracking: commitment -> bool (used).
+        dark_nonces_used: Map<felt252, bool>,
         /// Upgrade timelock fields.
         proposed_upgrade: ClassHash,
         upgrade_proposed_at: u64,
@@ -161,6 +169,8 @@ pub mod CLOBExchange {
         OperatorUpdated: OperatorUpdated,
         FeeRecipientUpdated: FeeRecipientUpdated,
         FeesUpdated: FeesUpdated,
+        UpgradeProposed: UpgradeProposed,
+        UpgradeCancelled: UpgradeCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -253,6 +263,15 @@ pub mod CLOBExchange {
         pub market_id: u128,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeProposed {
+        pub new_class_hash: ClassHash,
+        pub proposed_at: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeCancelled {}
+
     // -----------------------------------------------------------------
     //  Errors
     // -----------------------------------------------------------------
@@ -272,15 +291,23 @@ pub mod CLOBExchange {
         pub const CALLER_NOT_OPERATOR: felt252 = 'CLOB: caller != operator';
         pub const FILL_EXCEEDS_ORDER: felt252 = 'CLOB: fill > order amount';
         pub const FILL_ZERO: felt252 = 'CLOB: fill amount is zero';
+        pub const ZERO_COST: felt252 = 'CLOB: zero cost trade';
+        pub const SELF_TRADE: felt252 = 'CLOB: self-trade not allowed';
         pub const UPGRADE_NOT_PROPOSED: felt252 = 'CLOB: no pending upgrade';
         pub const UPGRADE_TIMELOCK: felt252 = 'CLOB: timelock not elapsed';
         pub const UPGRADE_ALREADY_PENDING: felt252 = 'CLOB: upgrade already pending';
         pub const ZERO_ADDRESS: felt252 = 'CLOB: zero address';
         pub const FEE_TOO_HIGH: felt252 = 'CLOB: fee exceeds max';
         pub const MARKET_CLOSED: felt252 = 'CLOB: market closed';
+        pub const MARKET_RESOLVED: felt252 = 'CLOB: market resolved';
         pub const MARKET_VOIDED: felt252 = 'CLOB: market is voided';
         pub const NOT_DARK_MARKET: felt252 = 'CLOB: not a dark market';
         pub const ALREADY_DARK: felt252 = 'CLOB: already dark market';
+        pub const NONCE_ALREADY_RESERVED: felt252 = 'CLOB: nonce already reserved';
+        pub const NONCE_NO_RESERVATION: felt252 = 'CLOB: no reservation for nonce';
+        pub const RELEASE_EXCEEDS_NONCE: felt252 = 'CLOB: release > nonce amount';
+        pub const DARK_NONCE_USED: felt252 = 'CLOB: dark nonce already used';
+        pub const INVALID_TOKEN_ID: felt252 = 'CLOB: token_id not in condition';
     }
 
     // -----------------------------------------------------------------
@@ -296,6 +323,7 @@ pub mod CLOBExchange {
         operator: ContractAddress,
     ) {
         assert(!market_factory.is_zero(), 'CLOB: zero market_factory');
+        assert(!conditional_tokens.is_zero(), 'CLOB: zero cond_tokens');
         assert(!fee_recipient.is_zero(), 'CLOB: zero fee_recipient');
         assert(!operator.is_zero(), 'CLOB: zero operator');
         self.ownable.initializer(owner);
@@ -320,6 +348,8 @@ pub mod CLOBExchange {
             let now = get_block_timestamp();
             self.proposed_upgrade.write(new_class_hash);
             self.upgrade_proposed_at.write(now);
+            // L-5 fix: emit event.
+            self.emit(UpgradeProposed { new_class_hash, proposed_at: now });
         }
 
         fn execute_upgrade(ref self: ContractState) {
@@ -340,6 +370,8 @@ pub mod CLOBExchange {
             assert(proposed.is_non_zero(), Errors::UPGRADE_NOT_PROPOSED);
             self.proposed_upgrade.write(Zero::zero());
             self.upgrade_proposed_at.write(0);
+            // L-5 fix: emit event.
+            self.emit(UpgradeCancelled {});
         }
     }
 
@@ -376,7 +408,8 @@ pub mod CLOBExchange {
 
             let erc20 = IERC20Dispatcher { contract_address: token };
             let balance_before = erc20.balance_of(this);
-            erc20.transfer_from(caller, this, amount);
+            // M-6 fix: assert ERC20 transfer_from succeeds.
+            assert(erc20.transfer_from(caller, this, amount), 'CLOB: transfer_from failed');
             let balance_after = erc20.balance_of(this);
             let actual_received = balance_after - balance_before;
 
@@ -398,7 +431,8 @@ pub mod CLOBExchange {
             self.balances.write((caller, token), current - amount);
 
             let erc20 = IERC20Dispatcher { contract_address: token };
-            erc20.transfer(caller, amount);
+            // M-6 fix: assert ERC20 transfer succeeds.
+            assert(erc20.transfer(caller, amount), 'CLOB: transfer failed');
 
             self.emit(Withdrawal { user: caller, token, amount });
             self.reentrancy_guard.end();
@@ -418,7 +452,8 @@ pub mod CLOBExchange {
             self.balances.write((caller, token), 0);
 
             let erc20 = IERC20Dispatcher { contract_address: token };
-            erc20.transfer(caller, amount);
+            // M-6 fix: assert ERC20 transfer succeeds.
+            assert(erc20.transfer(caller, amount), 'CLOB: transfer failed');
 
             self.emit(Withdrawal { user: caller, token, amount });
             self.reentrancy_guard.end();
@@ -426,6 +461,7 @@ pub mod CLOBExchange {
 
         /// C5c: Per-nonce reservation tracking. Each reservation is keyed by
         /// (user, nonce) to prevent concurrent orders from overwriting expiries.
+        /// H-2 fix: operator-only to prevent user manipulation of nonce metadata.
         fn reserve_balance(
             ref self: ContractState,
             user: ContractAddress,
@@ -433,14 +469,16 @@ pub mod CLOBExchange {
             amount: u256,
             nonce: u256,
             expiry: u128,
+            market_id: u64,
         ) {
             self.pausable.assert_not_paused();
             let caller = get_caller_address();
-            assert(
-                caller == self.operator.read() || caller == user,
-                Errors::CALLER_NOT_OPERATOR,
-            );
+            assert(caller == self.operator.read(), Errors::CALLER_NOT_OPERATOR);
             assert(amount > 0, Errors::ZERO_AMOUNT);
+
+            // Assert nonce is not already reserved (prevents silent overwrite).
+            let existing_reservation = self.reservation_amounts.read((user, nonce));
+            assert(existing_reservation == 0, Errors::NONCE_ALREADY_RESERVED);
 
             let available = self.balances.read((user, token));
             assert(available >= amount, Errors::INSUFFICIENT_BALANCE);
@@ -451,13 +489,17 @@ pub mod CLOBExchange {
             self.reserved.write((user, token), current_reserved + amount);
 
             // Per-nonce reservation tracking (C5c fix).
+            // H-3 fix: store token per nonce for cross-token validation.
             self.reservation_amounts.write((user, nonce), amount);
             self.reservation_expiries.write((user, nonce), expiry);
+            self.reservation_tokens.write((user, nonce), token);
+            self.reservation_market_ids.write((user, nonce), market_id);
 
             self.emit(BalanceReserved { user, token, amount, expiry });
         }
 
         /// C5c: Release uses per-nonce expiry for permissionless release.
+        /// H-3 fix: validate nonce has a reservation, token matches, cap amount.
         fn release_balance(
             ref self: ContractState,
             user: ContractAddress,
@@ -466,6 +508,17 @@ pub mod CLOBExchange {
             amount: u256,
         ) {
             assert(amount > 0, Errors::ZERO_AMOUNT);
+
+            // H-3 fix: nonce must have an active reservation.
+            let nonce_reserved = self.reservation_amounts.read((user, nonce));
+            assert(nonce_reserved > 0, Errors::NONCE_NO_RESERVATION);
+
+            // H-3 fix: token must match what was reserved under this nonce.
+            let reserved_token = self.reservation_tokens.read((user, nonce));
+            assert(reserved_token == token, Errors::TOKEN_MISMATCH);
+
+            // H-3 fix: cannot release more than was reserved under this nonce.
+            assert(amount <= nonce_reserved, Errors::RELEASE_EXCEEDS_NONCE);
 
             let caller = get_caller_address();
             let is_authorized = caller == self.operator.read() || caller == user;
@@ -483,12 +536,11 @@ pub mod CLOBExchange {
             let available = self.balances.read((user, token));
             self.balances.write((user, token), available + amount);
 
-            // Clear per-nonce reservation tracking.
-            let nonce_reserved = self.reservation_amounts.read((user, nonce));
-            if nonce_reserved >= amount {
-                self.reservation_amounts.write((user, nonce), nonce_reserved - amount);
-            } else {
-                self.reservation_amounts.write((user, nonce), 0);
+            // Update per-nonce reservation tracking.
+            self.reservation_amounts.write((user, nonce), nonce_reserved - amount);
+            if nonce_reserved == amount {
+                // Fully released — clear expiry and token tracking.
+                self.reservation_expiries.write((user, nonce), 0);
             }
 
             self.emit(BalanceReleased { user, token, amount });
@@ -499,10 +551,8 @@ pub mod CLOBExchange {
             maker_order: Order,
             taker_order: Order,
             fill_amount: u256,
-            maker_sig_r: felt252,
-            maker_sig_s: felt252,
-            taker_sig_r: felt252,
-            taker_sig_s: felt252,
+            maker_signature: Span<felt252>,
+            taker_signature: Span<felt252>,
         ) {
             self.pausable.assert_not_paused();
             self.reentrancy_guard.start();
@@ -540,6 +590,9 @@ pub mod CLOBExchange {
             let now_u64 = get_block_timestamp();
             assert(now_u64 < market.resolution_time, Errors::MARKET_CLOSED);
 
+            // C-4 fix: validate token_id belongs to this market's condition.
+            validate_token_id(market.condition_id, market.outcome_count, maker_order.token_id);
+
             // Nonces.
             assert(
                 !self.nonces_used.read((maker_order.trader, maker_order.nonce)),
@@ -550,16 +603,15 @@ pub mod CLOBExchange {
                 Errors::NONCE_ALREADY_USED,
             );
 
-            // ---- Verify ECDSA signatures via ISRC6 ----
+            // H-4 fix: reject self-trades to prevent wash trading.
+            assert(maker_order.trader != taker_order.trader, Errors::SELF_TRADE);
+
+            // C-1 fix: ALWAYS verify signatures — no bypass for (0,0).
             let maker_hash = hash_order(@maker_order);
             let taker_hash = hash_order(@taker_order);
 
-            if maker_sig_r != 0 || maker_sig_s != 0 {
-                verify_signature(maker_order.trader, maker_hash, maker_sig_r, maker_sig_s);
-            }
-            if taker_sig_r != 0 || taker_sig_s != 0 {
-                verify_signature(taker_order.trader, taker_hash, taker_sig_r, taker_sig_s);
-            }
+            verify_signature(maker_order.trader, maker_hash, maker_signature);
+            verify_signature(taker_order.trader, taker_hash, taker_signature);
 
             // ---- Partial-fill nonce accounting ----
             apply_fill(
@@ -582,6 +634,8 @@ pub mod CLOBExchange {
             // ---- Calculate fees (C3: configurable) ----
             let execution_price = maker_order.price;
             let cost = (fill_amount * execution_price) / 1_000_000_000_000_000_000;
+            // C-5 fix: prevent zero-cost trades from truncation.
+            assert(cost > 0, Errors::ZERO_COST);
             let current_taker_fee_bps = self.taker_fee_bps.read();
             let taker_fee = (cost * current_taker_fee_bps) / BPS_DENOMINATOR;
 
@@ -759,6 +813,13 @@ pub mod CLOBExchange {
 
             assert(fill_amount > 0, Errors::FILL_ZERO);
 
+            // C-2 fix: nonce-based replay protection via trade_commitment.
+            assert(!self.dark_nonces_used.read(trade_commitment), Errors::DARK_NONCE_USED);
+            self.dark_nonces_used.write(trade_commitment, true);
+
+            // H-4 fix: reject self-trades.
+            assert(maker != taker, Errors::SELF_TRADE);
+
             // Check market is still active (not past resolution_time, not voided).
             let mf = IMarketFactoryDispatcher {
                 contract_address: self.market_factory.read(),
@@ -768,8 +829,13 @@ pub mod CLOBExchange {
             let now_u64 = get_block_timestamp();
             assert(now_u64 < market.resolution_time, Errors::MARKET_CLOSED);
 
+            // C-4 fix: validate token_id belongs to this market's condition.
+            validate_token_id(market.condition_id, market.outcome_count, token_id);
+
             // Calculate fees (same math as settle_trade).
             let cost = (fill_amount * execution_price) / 1_000_000_000_000_000_000;
+            // C-5 fix: prevent zero-cost trades.
+            assert(cost > 0, Errors::ZERO_COST);
             let current_taker_fee_bps = self.taker_fee_bps.read();
             let taker_fee = (cost * current_taker_fee_bps) / BPS_DENOMINATOR;
 
@@ -824,6 +890,56 @@ pub mod CLOBExchange {
             // Emit minimal event — no addresses, no prices, no sides.
             self.emit(DarkTradeSettled { market_id, trade_commitment, fill_amount });
             self.reentrancy_guard.end();
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  M-8: Post-resolution force release — users can unlock their own
+    //  reservations after a market's resolution_time has passed.
+    // -----------------------------------------------------------------
+    #[abi(embed_v0)]
+    impl ForceReleaseImpl of super::ICLOBForceRelease<ContractState> {
+        fn force_release_after_resolution(
+            ref self: ContractState,
+            market_id: u64,
+            token: ContractAddress,
+            nonce: u256,
+        ) {
+            let caller = get_caller_address();
+            let nonce_reserved = self.reservation_amounts.read((caller, nonce));
+            assert(nonce_reserved > 0, Errors::NONCE_NO_RESERVATION);
+
+            let reserved_token = self.reservation_tokens.read((caller, nonce));
+            assert(reserved_token == token, Errors::TOKEN_MISMATCH);
+
+            // M-8 fix: verify market_id matches the stored reservation market.
+            let stored_market_id = self.reservation_market_ids.read((caller, nonce));
+            assert(stored_market_id == market_id, Errors::MARKET_MISMATCH);
+
+            // M-8 fix: verify market's resolution_time has passed or market is voided.
+            let mf = IMarketFactoryDispatcher {
+                contract_address: self.market_factory.read(),
+            };
+            let market = mf.get_market(market_id);
+            let now = get_block_timestamp();
+            assert(
+                now >= market.resolution_time || market.voided,
+                Errors::MARKET_CLOSED,
+            );
+
+            // Release full nonce amount back to available.
+            let current_reserved = self.reserved.read((caller, token));
+            assert(current_reserved >= nonce_reserved, Errors::INSUFFICIENT_RESERVED);
+
+            self.reserved.write((caller, token), current_reserved - nonce_reserved);
+            let available = self.balances.read((caller, token));
+            self.balances.write((caller, token), available + nonce_reserved);
+
+            // Clear nonce reservation tracking.
+            self.reservation_amounts.write((caller, nonce), 0);
+            self.reservation_expiries.write((caller, nonce), 0);
+
+            self.emit(BalanceReleased { user: caller, token, amount: nonce_reserved });
         }
     }
 
@@ -886,7 +1002,7 @@ pub mod CLOBExchange {
             .update(DOMAIN_NAME)
             .update(DOMAIN_VERSION)
             .update(chain_id)
-            .update('1')
+            .update(1) // revision — integer 1 to match starknet.js encoding
             .finalize()
     }
 
@@ -920,14 +1036,33 @@ pub mod CLOBExchange {
     fn verify_signature(
         signer: ContractAddress,
         hash: felt252,
-        sig_r: felt252,
-        sig_s: felt252,
+        signature: Span<felt252>,
     ) {
-        let signature: Array<felt252> = array![sig_r, sig_s];
+        let sig_array: Array<felt252> = signature.into();
         let result = ISRC6Dispatcher { contract_address: signer }
-            .is_valid_signature(hash, signature);
+            .is_valid_signature(hash, sig_array);
         let is_valid = result == starknet::VALIDATED || result == 1;
         assert(is_valid, Errors::INVALID_SIGNATURE);
+    }
+
+    /// C-4 fix: validate that token_id is a valid outcome for condition_id.
+    /// Uses the same Poseidon(condition_id, outcome_index) formula as ConditionalTokens.
+    fn validate_token_id(condition_id: felt252, outcome_count: u32, token_id: u256) {
+        let mut i: u32 = 0;
+        let mut valid = false;
+        while i < outcome_count {
+            let expected = PoseidonTrait::new()
+                .update(condition_id)
+                .update(i.into())
+                .finalize();
+            let expected_u256: u256 = expected.into();
+            if expected_u256 == token_id {
+                valid = true;
+                break;
+            }
+            i += 1;
+        };
+        assert(valid, Errors::INVALID_TOKEN_ID);
     }
 }
 
@@ -947,4 +1082,17 @@ pub trait ICLOBUpgradeTimelock<TContractState> {
 pub trait ICLOBPause<TContractState> {
     fn pause(ref self: TContractState);
     fn unpause(ref self: TContractState);
+}
+
+/// M-8: Allow users to force-release their own reservations.
+use starknet::ContractAddress;
+
+#[starknet::interface]
+pub trait ICLOBForceRelease<TContractState> {
+    fn force_release_after_resolution(
+        ref self: TContractState,
+        market_id: u64,
+        token: ContractAddress,
+        nonce: u256,
+    );
 }

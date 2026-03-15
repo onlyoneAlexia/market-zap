@@ -208,6 +208,61 @@ fn test_withdraw_insufficient_balance() {
     vault.withdraw(token_addr, 'cond_1', USER(), 200);
 }
 
+// -----------------------------------------------------------------
+//  Tests: M-7 remove_supported_token blocked with active balance
+// -----------------------------------------------------------------
+
+#[test]
+#[should_panic(expected: 'Vault: token has active balance')]
+fn test_remove_supported_token_with_active_balance() {
+    let vault_addr = deploy_vault();
+    let vault = ICollateralVaultDispatcher { contract_address: vault_addr };
+    let token_addr = deploy_mock_erc20();
+    let mock = IMockERC20Dispatcher { contract_address: token_addr };
+    let erc20 = IERC20Dispatcher { contract_address: token_addr };
+
+    // Setup: whitelist + deposit
+    cheat_caller_address(vault_addr, OWNER(), CheatSpan::TargetCalls(1));
+    vault.add_supported_token(token_addr);
+
+    mock.mint(USER(), 1000);
+    cheat_caller_address(token_addr, USER(), CheatSpan::TargetCalls(1));
+    erc20.approve(vault_addr, 500);
+
+    cheat_caller_address(vault_addr, CT_CONTRACT(), CheatSpan::TargetCalls(1));
+    vault.deposit(token_addr, 'cond_1', USER(), 500);
+
+    // Try to remove token while balance exists — should panic
+    cheat_caller_address(vault_addr, OWNER(), CheatSpan::TargetCalls(1));
+    vault.remove_supported_token(token_addr);
+}
+
+#[test]
+fn test_remove_supported_token_after_full_withdrawal() {
+    let vault_addr = deploy_vault();
+    let vault = ICollateralVaultDispatcher { contract_address: vault_addr };
+    let token_addr = deploy_mock_erc20();
+    let mock = IMockERC20Dispatcher { contract_address: token_addr };
+    let erc20 = IERC20Dispatcher { contract_address: token_addr };
+
+    // Setup: whitelist + deposit + full withdraw
+    cheat_caller_address(vault_addr, OWNER(), CheatSpan::TargetCalls(1));
+    vault.add_supported_token(token_addr);
+
+    mock.mint(USER(), 1000);
+    cheat_caller_address(token_addr, USER(), CheatSpan::TargetCalls(1));
+    erc20.approve(vault_addr, 500);
+
+    cheat_caller_address(vault_addr, CT_CONTRACT(), CheatSpan::TargetCalls(2));
+    vault.deposit(token_addr, 'cond_1', USER(), 500);
+    vault.withdraw(token_addr, 'cond_1', USER(), 500);
+
+    // Now removal should succeed
+    cheat_caller_address(vault_addr, OWNER(), CheatSpan::TargetCalls(1));
+    vault.remove_supported_token(token_addr);
+    assert(!vault.is_supported(token_addr), 'should be removed');
+}
+
 #[test]
 #[should_panic(expected: 'Vault: token not supported')]
 fn test_deposit_unsupported_token() {

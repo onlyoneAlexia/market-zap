@@ -45,6 +45,7 @@ pub trait ICLOBExchange<TContractState> {
         amount: u256,
         nonce: u256,
         expiry: u128,
+        market_id: u64,
     );
 
     /// Release reserved balance back to available.
@@ -58,17 +59,17 @@ pub trait ICLOBExchange<TContractState> {
     );
 
     /// Settle a single maker/taker trade.
-    /// Verifies ECDSA signatures, checks nonces, enforces expiry,
+    /// Verifies signatures, checks nonces, enforces expiry,
     /// calculates and distributes fees. Increments on-chain volume.
+    /// Signatures are passed as full Span<felt252> to support all account
+    /// types (OZ [r,s], Braavos [type,r,s], Cartridge session keys, etc.).
     fn settle_trade(
         ref self: TContractState,
         maker_order: Order,
         taker_order: Order,
         fill_amount: u256,
-        maker_sig_r: felt252,
-        maker_sig_s: felt252,
-        taker_sig_r: felt252,
-        taker_sig_s: felt252,
+        maker_signature: Span<felt252>,
+        taker_signature: Span<felt252>,
     );
 
     /// Cancel an order by marking its nonce as used.

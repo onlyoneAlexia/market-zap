@@ -70,21 +70,29 @@ export function loadPrivateKey() {
     return process.env.STARKNET_PRIVATE_KEY;
   }
 
-  const keystorePath = process.env.KEYSTORE_PATH || DEFAULT_KEYSTORE_PATH;
+  const rawKeystorePath = process.env.ADMIN_KEYSTORE_PATH || process.env.KEYSTORE_PATH || null;
+  let keystorePath = rawKeystorePath
+    ? path.resolve(rawKeystorePath)
+    : DEFAULT_KEYSTORE_PATH;
+  // Relative paths in .env may reference project root; check there too
+  if (!fs.existsSync(keystorePath) && rawKeystorePath) {
+    const fromRoot = path.resolve(PROJECT_ROOT, path.basename(rawKeystorePath));
+    if (fs.existsSync(fromRoot)) keystorePath = fromRoot;
+  }
 
   if (!fs.existsSync(keystorePath)) {
     throw new Error(
       `Keystore not found at ${keystorePath}\n` +
       `Create one with: node scripts/keystore.mjs create\n` +
-      `Or set KEYSTORE_PATH to point to your keystore file.`,
+      `Or set ADMIN_KEYSTORE_PATH / KEYSTORE_PATH to point to your keystore file.`,
     );
   }
 
-  const password = process.env.KEYSTORE_PASSWORD;
+  const password = process.env.ADMIN_KEYSTORE_PASSWORD || process.env.KEYSTORE_PASSWORD;
   if (!password) {
     throw new Error(
       "KEYSTORE_PASSWORD not set.\n" +
-      "Set it in your environment or use: KEYSTORE_PASSWORD=<pw> node <script>",
+      "Set it in your environment or use: ADMIN_KEYSTORE_PASSWORD=<pw> node <script>",
     );
   }
 

@@ -26,6 +26,13 @@
         "inputs": [],
         "outputs": [],
         "state_mutability": "external"
+      },
+      {
+        "type": "function",
+        "name": "cancel_upgrade",
+        "inputs": [],
+        "outputs": [],
+        "state_mutability": "external"
       }
     ]
   },
@@ -106,6 +113,10 @@
         "type": "function",
         "name": "finalize_resolution",
         "inputs": [
+          {
+            "name": "market_id",
+            "type": "core::integer::u64"
+          },
           {
             "name": "condition_id",
             "type": "core::felt252"
@@ -359,6 +370,29 @@
   },
   {
     "type": "event",
+    "name": "market_zap::admin_resolver::AdminResolver::UpgradeProposed",
+    "kind": "struct",
+    "members": [
+      {
+        "name": "new_class_hash",
+        "type": "core::starknet::class_hash::ClassHash",
+        "kind": "data"
+      },
+      {
+        "name": "proposed_at",
+        "type": "core::integer::u64",
+        "kind": "data"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "market_zap::admin_resolver::AdminResolver::UpgradeCancelled",
+    "kind": "struct",
+    "members": []
+  },
+  {
+    "type": "event",
     "name": "market_zap::admin_resolver::AdminResolver::Event",
     "kind": "enum",
     "variants": [
@@ -390,6 +424,16 @@
       {
         "name": "AdminTransferred",
         "type": "market_zap::admin_resolver::AdminResolver::AdminTransferred",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeProposed",
+        "type": "market_zap::admin_resolver::AdminResolver::UpgradeProposed",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeCancelled",
+        "type": "market_zap::admin_resolver::AdminResolver::UpgradeCancelled",
         "kind": "nested"
       }
     ]

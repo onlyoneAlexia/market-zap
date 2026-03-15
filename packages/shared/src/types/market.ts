@@ -35,6 +35,7 @@ export const MarketTypeSchema = z.enum(["public", "private"]);
 export const MarketStatus = {
   Active: "active",
   Paused: "paused",
+  Proposed: "proposed",
   Resolved: "resolved",
   Voided: "voided",
 } as const;
@@ -44,6 +45,7 @@ export type MarketStatus = (typeof MarketStatus)[keyof typeof MarketStatus];
 export const MarketStatusSchema = z.enum([
   "active",
   "paused",
+  "proposed",
   "resolved",
   "voided",
 ]);
@@ -122,6 +124,8 @@ export interface Market {
   marketType: MarketType;
   /** Number of unique traders (enriched by the engine). */
   traders?: number;
+  /** Optional thumbnail image URL for the market card. */
+  thumbnailUrl?: string | null;
 }
 
 export const MarketSchema = z.object({
@@ -144,6 +148,7 @@ export const MarketSchema = z.object({
   bondRefunded: z.boolean(),
   marketType: MarketTypeSchema.default("public"),
   traders: z.number().int().nonnegative().optional(),
+  thumbnailUrl: z.string().url().nullable().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -201,6 +206,7 @@ export interface CreateMarketInput {
   collateralToken: string;
   resolutionTime: number;
   marketType?: MarketType;
+  thumbnailUrl?: string;
 }
 
 export const CreateMarketInputSchema = z.object({
@@ -223,4 +229,5 @@ export const CreateMarketInputSchema = z.object({
       "Resolution time must be in the future",
     ),
   marketType: MarketTypeSchema.optional().default("public"),
+  thumbnailUrl: z.string().url().optional(),
 });

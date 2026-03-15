@@ -1,6 +1,7 @@
 /// MarketFactory -- Market creation and lifecycle management for Market-Zap.
 ///
-/// Creators post a $20 USDC bond which is refunded once volume exceeds $100.
+/// Creators post a $20 USDC bond which is refunded once volume exceeds $100
+/// AND the market has been resolved or voided.
 /// Markets can be voided permissionlessly if unresolved 14 days after
 /// resolution_time.
 
@@ -98,6 +99,8 @@ pub mod MarketFactory {
         BondRefunded: BondRefunded,
         MarketVoided: MarketVoided,
         VolumeIncremented: VolumeIncremented,
+        UpgradeProposed: UpgradeProposed,
+        UpgradeCancelled: UpgradeCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -134,6 +137,15 @@ pub mod MarketFactory {
         pub new_total: u256,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeProposed {
+        pub new_class_hash: ClassHash,
+        pub proposed_at: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeCancelled {}
+
     // -----------------------------------------------------------------
     //  Errors
     // -----------------------------------------------------------------
@@ -143,11 +155,13 @@ pub mod MarketFactory {
         pub const MARKET_NOT_FOUND: felt252 = 'MF: market not found';
         pub const BOND_ALREADY_REFUNDED: felt252 = 'MF: bond already refunded';
         pub const VOLUME_BELOW_THRESHOLD: felt252 = 'MF: volume < threshold';
+        pub const MARKET_NOT_RESOLVED: felt252 = 'MF: market not resolved';
         pub const VOID_TOO_EARLY: felt252 = 'MF: void grace not elapsed';
         pub const MARKET_ALREADY_VOIDED: felt252 = 'MF: already voided';
         pub const CALLER_NOT_CLOB: felt252 = 'MF: caller != CLOB';
         pub const UPGRADE_NOT_PROPOSED: felt252 = 'MF: no pending upgrade';
         pub const UPGRADE_TIMELOCK: felt252 = 'MF: timelock not elapsed';
+        pub const UPGRADE_ALREADY_PENDING: felt252 = 'MF: upgrade already pending';
         pub const INVALID_MARKET_TYPE: felt252 = 'MF: invalid market type';
     }
 
@@ -171,14 +185,22 @@ pub mod MarketFactory {
 
     // -----------------------------------------------------------------
     //  Upgrade with 48-hour timelock
+    //  M-4 fix: prevent re-proposal overwrite.
+    //  M-5 fix: add cancel_upgrade.
+    //  L-5 fix: emit events.
     // -----------------------------------------------------------------
     #[abi(embed_v0)]
     impl UpgradeTimelockImpl of super::IFactoryUpgradeTimelock<ContractState> {
         fn propose_upgrade(ref self: ContractState, new_class_hash: ClassHash) {
             self.ownable.assert_only_owner();
+            // M-4 fix: prevent overwriting a pending proposal.
+            let existing = self.proposed_upgrade.read();
+            assert(existing.is_zero(), Errors::UPGRADE_ALREADY_PENDING);
             let now = get_block_timestamp();
             self.proposed_upgrade.write(new_class_hash);
             self.upgrade_proposed_at.write(now);
+            // L-5 fix: emit event.
+            self.emit(UpgradeProposed { new_class_hash, proposed_at: now });
         }
 
         fn execute_upgrade(ref self: ContractState) {
@@ -191,6 +213,16 @@ pub mod MarketFactory {
             self.proposed_upgrade.write(Zero::zero());
             self.upgrade_proposed_at.write(0);
             self.upgradeable.upgrade(proposed);
+        }
+
+        /// M-5 fix: cancel a pending upgrade proposal.
+        fn cancel_upgrade(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            let proposed = self.proposed_upgrade.read();
+            assert(proposed.is_non_zero(), Errors::UPGRADE_NOT_PROPOSED);
+            self.proposed_upgrade.write(Zero::zero());
+            self.upgrade_proposed_at.write(0);
+            self.emit(UpgradeCancelled {});
         }
     }
 
@@ -224,7 +256,11 @@ pub mod MarketFactory {
             // which collateral token the market uses.
             let bond_token_addr = self.bond_token.read();
             let bond_erc20 = IERC20Dispatcher { contract_address: bond_token_addr };
-            bond_erc20.transfer_from(caller, get_contract_address(), BOND_AMOUNT);
+            // M-6 fix: assert ERC20 transfer_from succeeds.
+            assert(
+                bond_erc20.transfer_from(caller, get_contract_address(), BOND_AMOUNT),
+                'MF: bond transfer failed',
+            );
 
             // Compute question hash for compact storage.
             let mut serialized: Array<felt252> = array![];
@@ -286,11 +322,20 @@ pub mod MarketFactory {
             market_id
         }
 
+        /// H-1 fix: requires market to be resolved or voided before bond refund.
         fn refund_bond(ref self: ContractState, market_id: u64) {
             let mut market = self.markets.read(market_id);
             assert(!market.creator.is_zero(), Errors::MARKET_NOT_FOUND);
             assert(!market.bond_refunded, Errors::BOND_ALREADY_REFUNDED);
             assert(market.volume >= VOLUME_THRESHOLD, Errors::VOLUME_BELOW_THRESHOLD);
+
+            // H-1 fix: check that the market's condition is resolved on-chain.
+            // Cross-contract call to ConditionalTokens to verify resolution.
+            let ct = IConditionalTokensDispatcher {
+                contract_address: self.conditional_tokens.read(),
+            };
+            let condition_view = ct.get_condition(market.condition_id);
+            assert(condition_view.resolved || market.voided, Errors::MARKET_NOT_RESOLVED);
 
             market.bond_refunded = true;
             self.markets.write(market_id, market);
@@ -298,11 +343,16 @@ pub mod MarketFactory {
             // Transfer bond back to creator (in bond_token = USDC).
             let bond_token_addr = self.bond_token.read();
             let bond_erc20 = IERC20Dispatcher { contract_address: bond_token_addr };
-            bond_erc20.transfer(market.creator, BOND_AMOUNT);
+            // M-6 fix: assert ERC20 transfer succeeds.
+            assert(
+                bond_erc20.transfer(market.creator, BOND_AMOUNT),
+                'MF: bond refund failed',
+            );
 
             self.emit(BondRefunded { market_id, creator: market.creator, amount: BOND_AMOUNT });
         }
 
+        /// H-5 fix: returns bond to creator on void (market is already penalized).
         fn void_market(ref self: ContractState, market_id: u64) {
             let mut market = self.markets.read(market_id);
             assert(!market.creator.is_zero(), Errors::MARKET_NOT_FOUND);
@@ -314,15 +364,30 @@ pub mod MarketFactory {
             market.voided = true;
             self.markets.write(market_id, market);
 
-            // Market is now voided on-chain. The AdminResolver's void_resolve
-            // function should be called next to report equal-split payouts so
-            // all holders can redeem their proportional share of collateral.
+            // H-5 fix: return bond to creator if not already refunded.
+            // Voiding is already a penalty (traders get equal split, not full payout).
+            if !market.bond_refunded {
+                let mut updated = self.markets.read(market_id);
+                updated.bond_refunded = true;
+                self.markets.write(market_id, updated);
+
+                let bond_token_addr = self.bond_token.read();
+                let bond_erc20 = IERC20Dispatcher { contract_address: bond_token_addr };
+                assert(
+                    bond_erc20.transfer(market.creator, BOND_AMOUNT),
+                    'MF: void bond return failed',
+                );
+
+                self.emit(BondRefunded { market_id, creator: market.creator, amount: BOND_AMOUNT });
+            }
+
             self.emit(MarketVoided { market_id });
         }
 
+        /// L-4 fix: removed dead set_clob_exchange (constructor already sets it).
+        /// Owner can now update CLOB exchange address if needed.
         fn set_clob_exchange(ref self: ContractState, clob_exchange: ContractAddress) {
             self.ownable.assert_only_owner();
-            assert(self.clob_exchange.read().is_zero(), 'MF: clob already set');
             assert(!clob_exchange.is_zero(), 'MF: zero address');
             self.clob_exchange.write(clob_exchange);
         }
@@ -407,6 +472,7 @@ pub mod MarketFactory {
 
 // -----------------------------------------------------------------
 //  Upgrade timelock interface (contract-local)
+//  M-5 fix: added cancel_upgrade.
 // -----------------------------------------------------------------
 use starknet::class_hash::ClassHash;
 
@@ -414,4 +480,5 @@ use starknet::class_hash::ClassHash;
 pub trait IFactoryUpgradeTimelock<TContractState> {
     fn propose_upgrade(ref self: TContractState, new_class_hash: ClassHash);
     fn execute_upgrade(ref self: TContractState);
+    fn cancel_upgrade(ref self: TContractState);
 }

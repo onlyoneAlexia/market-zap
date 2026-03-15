@@ -1,0 +1,81 @@
+version: "3.8"
+
+services:
+  # ── Postgres ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: market_zap
+      POSTGRES_USER: marketzap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketzap -d market_zap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Engine ────────────────────────────────────────────────────────
+  engine:
+    build:
+      context: ..
+      dockerfile: services/engine/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "3001"
+      NODE_ENV: production
+      DATABASE_URL: postgresql://marketzap:${POSTGRES_PASSWORD}@postgres:5432/market_zap
+      REDIS_URL: redis://redis:6379
+      STARKNET_RPC_URL: ${STARKNET_RPC_URL:?Set STARKNET_RPC_URL in .env}
+      ADMIN_ADDRESS: ${ADMIN_ADDRESS:?Set ADMIN_ADDRESS in .env}
+      ADMIN_PRIVATE_KEY: ${ADMIN_PRIVATE_KEY:-}
+      ENGINE_API_KEY: ${ENGINE_API_KEY:?Set ENGINE_API_KEY in .env}
+      SKIP_BALANCE_CHECK: ${SKIP_BALANCE_CHECK:-false}
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:3001:3001"
+
+  # ── Caddy (reverse proxy + auto-SSL) ─────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - engine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -9,6 +10,7 @@ const nextConfig: NextConfig = {
   // Keep dev artifacts separate from production build artifacts so
   // `next build` and `next dev` cannot corrupt each other's manifests.
   distDir: isDev ? ".next-dev" : ".next",
+  outputFileTracingRoot: path.join(__dirname, "../../"),
   transpilePackages: ["@market-zap/shared"],
   images: {
     remotePatterns: [

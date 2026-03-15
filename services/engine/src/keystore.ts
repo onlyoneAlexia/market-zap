@@ -6,6 +6,8 @@
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { logger } from "./logger.js";
 
 export interface KeystoreConfig {
@@ -13,6 +15,31 @@ export interface KeystoreConfig {
   keystorePath: string;
   /** Password to decrypt the keystore */
   password: string;
+}
+
+/**
+ * Resolve the starkli binary path — checks PATH first, then the default
+ * install location (~/.starkli/bin/starkli).
+ */
+function resolveStarkli(): string {
+  try {
+    execFileSync("starkli", ["--version"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return "starkli";
+  } catch {
+    // Not in PATH — try default install location
+    const defaultPath = path.join(os.homedir(), ".starkli", "bin", "starkli");
+    if (fs.existsSync(defaultPath)) {
+      return defaultPath;
+    }
+    throw new Error(
+      "starkli not found in PATH or at ~/.starkli/bin/starkli. " +
+      "Install it with: curl https://get.starkli.sh | sh && starkliup",
+    );
+  }
 }
 
 /**
@@ -25,7 +52,9 @@ export function decryptKeystore(config: KeystoreConfig): string {
     throw new Error(`Keystore file not found: ${config.keystorePath}`);
   }
 
-  const out = execFileSync("starkli", [
+  const starkli = resolveStarkli();
+
+  const out = execFileSync(starkli, [
     "signer", "keystore", "inspect-private",
     config.keystorePath,
     "--password", config.password,

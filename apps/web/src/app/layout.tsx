@@ -3,6 +3,7 @@ import "@/styles/globals.css";
 import { Providers } from "@/components/layout/providers";
 import { Navbar } from "@/components/layout/navbar";
 import { ConnectModalHost } from "@/components/layout/connect-modal-host";
+import { WarpGrid } from "@/components/ui/warp-grid";
 import { Space_Grotesk, Outfit, JetBrains_Mono } from "next/font/google";
 
 const spaceGrotesk = Space_Grotesk({
@@ -23,7 +24,6 @@ const jetbrains = JetBrains_Mono({
   display: "swap",
 });
 
-
 export const metadata: Metadata = {
   title: {
     default: "MarketZap — Prediction Markets on Starknet",
@@ -39,15 +39,8 @@ export const metadata: Metadata = {
     icon: "/icon",
     apple: "/apple-icon",
   },
-  description:
-    "Trade on the outcome of real-world events. Fast, fair, and gasless prediction markets powered by Starknet.",
-  keywords: [
-    "prediction markets",
-    "starknet",
-    "crypto",
-    "trading",
-    "binary options",
-  ],
+  description: "Trade on the outcome of real-world events. Fast, fair, and gasless prediction markets powered by Starknet.",
+  keywords: ["prediction markets", "starknet", "crypto", "trading", "binary options"],
 };
 
 export const viewport: Viewport = {
@@ -56,11 +49,7 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -73,11 +62,14 @@ export default function RootLayout({
         <link rel="preconnect" href="https://auth.turnkey.com" crossOrigin="" />
         <link rel="preconnect" href="https://js.stripe.com" crossOrigin="" />
       </head>
-      <body className={`${spaceGrotesk.variable} ${outfit.variable} ${jetbrains.variable} min-h-screen font-sans bg-background text-foreground`}>
+      <body
+        className={`${spaceGrotesk.variable} ${outfit.variable} ${jetbrains.variable} min-h-screen font-sans bg-background text-foreground`}
+      >
         <Providers>
           <div className="relative flex min-h-screen flex-col">
             <Navbar />
-            <main className="flex-1">{children}</main>
+            <WarpGrid />
+            <main className="relative z-[1] flex-1">{children}</main>
           </div>
           <ConnectModalHost />
         </Providers>

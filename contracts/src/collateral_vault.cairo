@@ -64,6 +64,8 @@ pub mod CollateralVault {
         supported_tokens: Map<ContractAddress, bool>,
         /// (token, condition_id) -> collateral balance held.
         condition_balances: Map<(ContractAddress, felt252), u256>,
+        /// M-7 fix: token -> aggregate balance across all conditions.
+        token_total_balance: Map<ContractAddress, u256>,
         /// Upgrade timelock fields.
         proposed_upgrade: ClassHash,
         upgrade_proposed_at: u64,
@@ -85,6 +87,8 @@ pub mod CollateralVault {
         Withdrawn: Withdrawn,
         TokenAdded: TokenAdded,
         TokenRemoved: TokenRemoved,
+        UpgradeProposed: UpgradeProposed,
+        UpgradeCancelled: UpgradeCancelled,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -118,6 +122,15 @@ pub mod CollateralVault {
         pub token: ContractAddress,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeProposed {
+        pub new_class_hash: ClassHash,
+        pub proposed_at: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct UpgradeCancelled {}
+
     // -----------------------------------------------------------------
     //  Errors
     // -----------------------------------------------------------------
@@ -129,6 +142,8 @@ pub mod CollateralVault {
         pub const ZERO_RECEIVED: felt252 = 'Vault: zero received';
         pub const UPGRADE_NOT_PROPOSED: felt252 = 'Vault: no pending upgrade';
         pub const UPGRADE_TIMELOCK: felt252 = 'Vault: timelock not elapsed';
+        pub const UPGRADE_ALREADY_PENDING: felt252 = 'Vault: upgrade pending';
+        pub const TOKEN_HAS_BALANCE: felt252 = 'Vault: token has active balance';
     }
 
     // -----------------------------------------------------------------
@@ -157,14 +172,22 @@ pub mod CollateralVault {
 
     // -----------------------------------------------------------------
     //  Upgrade with 48-hour timelock
+    //  M-4 fix: prevent re-proposal overwrite.
+    //  M-5 fix: add cancel_upgrade.
+    //  L-5 fix: emit events for propose/cancel.
     // -----------------------------------------------------------------
     #[abi(embed_v0)]
     impl UpgradeTimelockImpl of super::IVaultUpgradeTimelock<ContractState> {
         fn propose_upgrade(ref self: ContractState, new_class_hash: ClassHash) {
             self.ownable.assert_only_owner();
+            // M-4 fix: prevent overwriting a pending proposal.
+            let existing = self.proposed_upgrade.read();
+            assert(existing.is_zero(), Errors::UPGRADE_ALREADY_PENDING);
             let now = get_block_timestamp();
             self.proposed_upgrade.write(new_class_hash);
             self.upgrade_proposed_at.write(now);
+            // L-5 fix: emit event.
+            self.emit(UpgradeProposed { new_class_hash, proposed_at: now });
         }
 
         fn execute_upgrade(ref self: ContractState) {
@@ -178,6 +201,15 @@ pub mod CollateralVault {
             self.upgrade_proposed_at.write(0);
             self.upgradeable.upgrade(proposed);
         }
+
+        fn cancel_upgrade(ref self: ContractState) {
+            self.ownable.assert_only_owner();
+            let proposed = self.proposed_upgrade.read();
+            assert(proposed.is_non_zero(), Errors::UPGRADE_NOT_PROPOSED);
+            self.proposed_upgrade.write(Zero::zero());
+            self.upgrade_proposed_at.write(0);
+            self.emit(UpgradeCancelled {});
+        }
     }
 
     // -----------------------------------------------------------------
@@ -187,13 +219,14 @@ pub mod CollateralVault {
     impl CollateralVaultImpl of market_zap::interfaces::i_collateral_vault::ICollateralVault<
         ContractState,
     > {
+        /// C-3 fix: returns actual_received so ConditionalTokens can mint correctly.
         fn deposit(
             ref self: ContractState,
             token: ContractAddress,
             condition_id: felt252,
             from: ContractAddress,
             amount: u256,
-        ) {
+        ) -> u256 {
             self.reentrancy_guard.start();
             self.assert_only_conditional_tokens();
             assert(self.supported_tokens.read(token), Errors::TOKEN_NOT_SUPPORTED);
@@ -204,7 +237,8 @@ pub mod CollateralVault {
 
             // Actual-received accounting.
             let balance_before = erc20.balance_of(this);
-            erc20.transfer_from(from, this, amount);
+            // M-6 fix: assert ERC20 transfer_from succeeds.
+            assert(erc20.transfer_from(from, this, amount), 'Vault: transfer_from failed');
             let balance_after = erc20.balance_of(this);
             let actual_received = balance_after - balance_before;
             assert(actual_received > 0, Errors::ZERO_RECEIVED);
@@ -212,6 +246,10 @@ pub mod CollateralVault {
             // Credit condition balance.
             let current = self.condition_balances.read((token, condition_id));
             self.condition_balances.write((token, condition_id), current + actual_received);
+
+            // M-7 fix: track aggregate token balance.
+            let total = self.token_total_balance.read(token);
+            self.token_total_balance.write(token, total + actual_received);
 
             self
                 .emit(
@@ -224,6 +262,8 @@ pub mod CollateralVault {
                     },
                 );
             self.reentrancy_guard.end();
+
+            actual_received
         }
 
         fn withdraw(
@@ -242,9 +282,14 @@ pub mod CollateralVault {
             assert(current >= amount, Errors::INSUFFICIENT_BALANCE);
             self.condition_balances.write((token, condition_id), current - amount);
 
+            // M-7 fix: decrement aggregate token balance.
+            let total = self.token_total_balance.read(token);
+            self.token_total_balance.write(token, total - amount);
+
             // Transfer out.
             let erc20 = IERC20Dispatcher { contract_address: token };
-            erc20.transfer(to, amount);
+            // M-6 fix: assert ERC20 transfer succeeds.
+            assert(erc20.transfer(to, amount), 'Vault: transfer failed');
 
             self.emit(Withdrawn { token, condition_id, to, amount });
             self.reentrancy_guard.end();
@@ -267,6 +312,9 @@ pub mod CollateralVault {
 
         fn remove_supported_token(ref self: ContractState, token: ContractAddress) {
             self.ownable.assert_only_owner();
+            // M-7 fix: prevent removal while conditions hold active balances.
+            let total = self.token_total_balance.read(token);
+            assert(total == 0, Errors::TOKEN_HAS_BALANCE);
             self.supported_tokens.write(token, false);
             self.emit(TokenRemoved { token });
         }
@@ -287,6 +335,7 @@ pub mod CollateralVault {
 
 // -----------------------------------------------------------------
 //  Upgrade timelock interface (contract-local)
+//  M-5 fix: added cancel_upgrade.
 // -----------------------------------------------------------------
 use starknet::class_hash::ClassHash;
 
@@ -294,4 +343,5 @@ use starknet::class_hash::ClassHash;
 pub trait IVaultUpgradeTimelock<TContractState> {
     fn propose_upgrade(ref self: TContractState, new_class_hash: ClassHash);
     fn execute_upgrade(ref self: TContractState);
+    fn cancel_upgrade(ref self: TContractState);
 }

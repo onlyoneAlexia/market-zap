@@ -70,49 +70,155 @@ export async function getMarketStats(
 export async function getPriceHistory(
   pool: Pool,
   marketId: string,
-  _outcomeIndex: number,
-  interval: "1h" | "6h" | "1d" = "1h",
+  outcomeCount: number,
+  interval: "5m" | "15m" | "1h" | "6h" | "1d" = "1h",
   limit = 168,
-): Promise<Array<{ timestamp: Date; price: string; volume: string }>> {
-  const intervalMap = { "1h": "1 hour", "6h": "6 hours", "1d": "1 day" };
-  const truncMap = { "1h": "hour", "6h": "hour", "1d": "day" };
+): Promise<Array<{ timestamp: Date; prices: string[]; volume: string }>> {
+  const normalizedOutcomeCount = Math.max(2, outcomeCount);
+  const intervalMap: Record<string, string> = {
+    "5m": "5 minutes",
+    "15m": "15 minutes",
+    "1h": "1 hour",
+    "6h": "6 hours",
+    "1d": "1 day",
+  };
   const pgInterval = intervalMap[interval];
-  const truncUnit = truncMap[interval];
 
-  // For 6h interval, we floor to the nearest 6-hour block using epoch math.
-  // For 1h/1d, plain date_trunc suffices.
-  const bucketExpr =
-    interval === "6h"
-      ? `to_timestamp(floor(extract(epoch from created_at) / 21600) * 21600)`
-      : `date_trunc('${truncUnit}', created_at)`;
+  // Intervals that don't align with date_trunc use epoch-based floor.
+  const epochBuckets: Record<string, number> = {
+    "5m": 300,
+    "15m": 900,
+    "6h": 21600,
+  };
+  const bucketExpr = epochBuckets[interval]
+    ? `to_timestamp(floor(extract(epoch from created_at) / ${epochBuckets[interval]}) * ${epochBuckets[interval]})`
+    : `date_trunc('${interval === "1d" ? "day" : "hour"}', created_at)`;
+
+  if (normalizedOutcomeCount === 2) {
+    const result = await pool.query<{
+      bucket: Date;
+      avg_price: string;
+      volume: string;
+    }>(
+      `SELECT
+         ${bucketExpr} AS bucket,
+         AVG(
+           CASE WHEN outcome_index = 0 THEN price::NUMERIC
+                ELSE 1 - price::NUMERIC
+           END
+         )::TEXT AS avg_price,
+         SUM(amount::NUMERIC)::TEXT AS volume
+       FROM trades
+       WHERE market_id = $1
+         AND created_at > NOW() - ($2::INTERVAL * $3)
+       GROUP BY bucket
+       ORDER BY bucket DESC
+       LIMIT $3`,
+      [marketId, pgInterval, limit],
+    );
+
+    return result.rows.map((row) => {
+      const p0 = Number.parseFloat(row.avg_price);
+      const p1 = Number.isFinite(p0) ? 1 - p0 : 0;
+      return {
+        timestamp: row.bucket,
+        prices: [row.avg_price, p1.toString()],
+        volume: row.volume,
+      };
+    });
+  }
 
   const result = await pool.query<{
     bucket: Date;
+    outcome_index: number;
     avg_price: string;
-    volume: string;
+    total_volume: string;
   }>(
-    `SELECT
-       ${bucketExpr} AS bucket,
-       AVG(
-         CASE WHEN outcome_index = 0 THEN price::NUMERIC
-              ELSE 1 - price::NUMERIC
-         END
-       )::TEXT AS avg_price,
-       SUM(amount::NUMERIC)::TEXT AS volume
-     FROM trades
-     WHERE market_id = $1
-       AND created_at > NOW() - ($2::INTERVAL * $3)
-     GROUP BY bucket
-     ORDER BY bucket DESC
-     LIMIT $3`,
+    `WITH bucketed AS (
+       SELECT
+         ${bucketExpr} AS bucket,
+         outcome_index,
+         price::NUMERIC AS price,
+         amount::NUMERIC AS amount
+       FROM trades
+       WHERE market_id = $1
+         AND created_at > NOW() - ($2::INTERVAL * $3)
+     ),
+     per_outcome AS (
+       SELECT
+         bucket,
+         outcome_index,
+         AVG(price)::TEXT AS avg_price,
+         SUM(amount)::NUMERIC AS outcome_volume
+       FROM bucketed
+       GROUP BY bucket, outcome_index
+     ),
+     ranked AS (
+       SELECT
+         bucket,
+         outcome_index,
+         avg_price,
+         SUM(outcome_volume) OVER (PARTITION BY bucket)::TEXT AS total_volume,
+         DENSE_RANK() OVER (ORDER BY bucket DESC) AS bucket_rank
+       FROM per_outcome
+     )
+     SELECT
+       bucket,
+       outcome_index,
+       avg_price,
+       total_volume
+     FROM ranked
+     WHERE bucket_rank <= $3
+     ORDER BY bucket DESC, outcome_index ASC`,
     [marketId, pgInterval, limit],
   );
 
-  return result.rows.map((row) => ({
-    timestamp: row.bucket,
-    price: row.avg_price,
-    volume: row.volume,
-  }));
+  const buckets = new Map<
+    number,
+    { timestamp: Date; prices: Array<string | null>; volume: string }
+  >();
+  for (const row of result.rows) {
+    const tsKey = row.bucket.getTime();
+    const existing = buckets.get(tsKey);
+    const point =
+      existing ??
+      {
+        timestamp: row.bucket,
+        prices: new Array(normalizedOutcomeCount).fill(null),
+        volume: row.total_volume ?? "0",
+      };
+
+    if (!existing) buckets.set(tsKey, point);
+
+    if (row.outcome_index < 0 || row.outcome_index >= normalizedOutcomeCount) continue;
+    point.prices[row.outcome_index] = row.avg_price;
+  }
+
+  const defaultPrice = (1 / normalizedOutcomeCount).toFixed(6);
+  const lastKnown = new Array<string>(normalizedOutcomeCount).fill(defaultPrice);
+
+  const sortedAsc = Array.from(buckets.values()).sort(
+    (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
+  );
+  for (const point of sortedAsc) {
+    for (let index = 0; index < normalizedOutcomeCount; index++) {
+      const price = point.prices[index];
+      if (price == null) {
+        point.prices[index] = lastKnown[index];
+        continue;
+      }
+      lastKnown[index] = price;
+    }
+  }
+
+  return sortedAsc
+    .slice()
+    .reverse()
+    .map((point) => ({
+      timestamp: point.timestamp,
+      prices: point.prices as string[],
+      volume: point.volume,
+    }));
 }
 
 export async function insertRedemption(

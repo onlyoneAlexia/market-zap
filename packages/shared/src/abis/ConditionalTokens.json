@@ -26,6 +26,13 @@
         "inputs": [],
         "outputs": [],
         "state_mutability": "external"
+      },
+      {
+        "type": "function",
+        "name": "cancel_upgrade",
+        "inputs": [],
+        "outputs": [],
+        "state_mutability": "external"
       }
     ]
   },
@@ -1009,6 +1016,12 @@
   },
   {
     "type": "event",
+    "name": "market_zap::conditional_tokens::ConditionalTokens::UpgradeCancelled",
+    "kind": "struct",
+    "members": []
+  },
+  {
+    "type": "event",
     "name": "market_zap::conditional_tokens::ConditionalTokens::Event",
     "kind": "enum",
     "variants": [
@@ -1060,6 +1073,11 @@
       {
         "name": "UpgradeProposed",
         "type": "market_zap::conditional_tokens::ConditionalTokens::UpgradeProposed",
+        "kind": "nested"
+      },
+      {
+        "name": "UpgradeCancelled",
+        "type": "market_zap::conditional_tokens::ConditionalTokens::UpgradeCancelled",
         "kind": "nested"
       }
     ]
