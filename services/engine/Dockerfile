@@ -52,15 +52,9 @@ COPY --from=build /app/packages/shared/src/abis/ packages/shared/src/abis/
 COPY --from=build /app/packages/shared/src/addresses/ packages/shared/src/addresses/
 COPY --from=build /app/services/engine/dist/ services/engine/dist/
 
-# The shared package exports from src/ for bundlers but main points to dist/
-# Copy the source index so both resolution paths work
-COPY --from=build /app/packages/shared/src/index.ts packages/shared/src/index.ts
-COPY --from=build /app/packages/shared/src/types/ packages/shared/src/types/
-COPY --from=build /app/packages/shared/src/contracts.ts packages/shared/src/contracts.ts
-COPY --from=build /app/packages/shared/src/constants.ts packages/shared/src/constants.ts
-COPY --from=build /app/packages/shared/src/api-client.ts packages/shared/src/api-client.ts
-COPY --from=build /app/packages/shared/src/starkzap.ts packages/shared/src/starkzap.ts
-COPY --from=build /app/packages/shared/src/order-hash.ts packages/shared/src/order-hash.ts
+# Patch shared package.json exports to use compiled JS (not TS source)
+# The original points to ./src/*.ts for bundlers, but Node.js needs ./dist/*.js
+RUN sed -i 's|./src/index.ts|./dist/index.js|g; s|./src/types/index.ts|./dist/types/index.js|g' packages/shared/package.json
 
 EXPOSE 3001
 
