@@ -111,9 +111,8 @@ export class MarketZapWallet {
     this.privateKey = null;
     const cartridgeWallet = await this.sdk.connectCartridge({
       ...getMarketZapCartridgeConnectOptions(this.network, options),
-      // Cartridge Controller handles session-backed execution itself. Avoid
-      // StarkZap's generic sponsored/SNIP-9 path for this wallet type.
-      feeMode: "user_pays",
+      // Cartridge Controller is gasless — its paymaster handles fees.
+      feeMode: "sponsored",
     });
     this.wallet = cartridgeWallet;
     this.connectionKind = "cartridge";

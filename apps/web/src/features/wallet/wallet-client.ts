@@ -128,7 +128,7 @@ export async function getCartridgeClient(): Promise<MarketZapWalletType> {
     .then(({ MarketZapWallet }) => {
       const client = new MarketZapWallet("sepolia", {
         rpcUrl: STARKNET_RPC_URL,
-        feeMode: "user_pays",
+        feeMode: "sponsored",
       });
       cartridgeClient = client;
       return client;
