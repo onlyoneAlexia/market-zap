@@ -42,6 +42,8 @@ let cartridgeClientPromise: Promise<MarketZapWalletType> | null = null;
 let cartridgeConnectPromise: Promise<CartridgeConnectResult> | null = null;
 
 const CARTRIDGE_SESSION_EXCHANGE_KEY = "mz:cartridge-exchange-addr";
+const CARTRIDGE_RPC_URL =
+  process.env.NEXT_PUBLIC_CARTRIDGE_RPC_URL?.trim() || undefined;
 
 function isCartridgeSessionStale(): boolean {
   try {
@@ -127,7 +129,7 @@ export async function getCartridgeClient(): Promise<MarketZapWalletType> {
   cartridgeClientPromise = import("@market-zap/shared")
     .then(({ MarketZapWallet }) => {
       const client = new MarketZapWallet("sepolia", {
-        rpcUrl: STARKNET_RPC_URL,
+        ...(CARTRIDGE_RPC_URL ? { rpcUrl: CARTRIDGE_RPC_URL } : {}),
         feeMode: "sponsored",
       });
       cartridgeClient = client;
