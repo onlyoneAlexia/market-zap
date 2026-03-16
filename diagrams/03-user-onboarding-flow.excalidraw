@@ -1,0 +1,241 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [
+    {
+      "id": "title", "type": "text", "x": 200, "y": 20, "width": 500, "height": 35,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "a0", "roundness": null,
+      "seed": 1, "version": 1, "versionNonce": 2, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "User Onboarding Flow", "fontSize": 28, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "top", "angle": 0
+    },
+    {
+      "id": "start", "type": "ellipse", "x": 370, "y": 80, "width": 140, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#ffd43b", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "b0", "roundness": {"type":2},
+      "seed": 3, "version": 1, "versionNonce": 4, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "start-label", "type": "text", "x": 400, "y": 95, "width": 80, "height": 20,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "b1", "roundness": null,
+      "seed": 5, "version": 1, "versionNonce": 6, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Visit App", "fontSize": 16, "fontFamily": 5, "textAlign": "center",
+      "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "arrow-start", "type": "arrow", "x": 440, "y": 130, "width": 0, "height": 40,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "b2", "roundness": {"type":2},
+      "seed": 7, "version": 1, "versionNonce": 8, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[0,40]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "connect-decision", "type": "diamond", "x": 355, "y": 170, "width": 170, "height": 70,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#e7f5ff", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c0", "roundness": {"type":2},
+      "seed": 9, "version": 1, "versionNonce": 10, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "connect-label", "type": "text", "x": 390, "y": 192, "width": 100, "height": 26,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c1", "roundness": null,
+      "seed": 11, "version": 1, "versionNonce": 12, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Choose wallet\nmethod", "fontSize": 12, "fontFamily": 5, "textAlign": "center",
+      "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "arrow-social", "type": "arrow", "x": 355, "y": 205, "width": -155, "height": 55,
+      "strokeColor": "#1971c2", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c2", "roundness": {"type":2},
+      "seed": 13, "version": 1, "versionNonce": 14, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[-155,55]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "arrow-social-label", "type": "text", "x": 210, "y": 215, "width": 100, "height": 14,
+      "strokeColor": "#1971c2", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c3", "roundness": null,
+      "seed": 15, "version": 1, "versionNonce": 16, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "No wallet", "fontSize": 11, "fontFamily": 5, "textAlign": "center",
+      "verticalAlign": "top", "angle": 0
+    },
+    {
+      "id": "arrow-browser", "type": "arrow", "x": 525, "y": 205, "width": 155, "height": 55,
+      "strokeColor": "#2f9e44", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c4", "roundness": {"type":2},
+      "seed": 17, "version": 1, "versionNonce": 18, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[155,55]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "arrow-browser-label", "type": "text", "x": 570, "y": 215, "width": 100, "height": 14,
+      "strokeColor": "#2f9e44", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "c5", "roundness": null,
+      "seed": 19, "version": 1, "versionNonce": 20, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Has wallet", "fontSize": 11, "fontFamily": 5, "textAlign": "center",
+      "verticalAlign": "top", "angle": 0
+    },
+    {
+      "id": "social-box", "type": "rectangle", "x": 80, "y": 260, "width": 200, "height": 70,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#a5d8ff", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d0", "roundness": {"type":3},
+      "seed": 21, "version": 1, "versionNonce": 22, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "social-label", "type": "text", "x": 100, "y": 270, "width": 160, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d1", "roundness": null,
+      "seed": 23, "version": 1, "versionNonce": 24, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Cartridge Controller\nGoogle / Discord / Passkey\n(auto-creates smart account)", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "browser-box", "type": "rectangle", "x": 600, "y": 260, "width": 200, "height": 70,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#b2f2bb", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d2", "roundness": {"type":3},
+      "seed": 25, "version": 1, "versionNonce": 26, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "browser-label", "type": "text", "x": 620, "y": 270, "width": 160, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d3", "roundness": null,
+      "seed": 27, "version": 1, "versionNonce": 28, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Browser Wallet\nArgent X / Braavos\n(extension connect)", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "arrow-social-down", "type": "arrow", "x": 180, "y": 330, "width": 0, "height": 40,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d4", "roundness": {"type":2},
+      "seed": 29, "version": 1, "versionNonce": 30, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[0,40]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "arrow-browser-down", "type": "arrow", "x": 700, "y": 330, "width": 0, "height": 40,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "d5", "roundness": {"type":2},
+      "seed": 31, "version": 1, "versionNonce": 32, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[0,40]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "gasless-box", "type": "rectangle", "x": 80, "y": 370, "width": 200, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#d0bfff", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "e0", "roundness": {"type":3},
+      "seed": 33, "version": 1, "versionNonce": 34, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "gasless-label", "type": "text", "x": 100, "y": 380, "width": 160, "height": 30,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "e1", "roundness": null,
+      "seed": 35, "version": 1, "versionNonce": 36, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "StarkZap SDK\nGasless via AVNU Paymaster", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "gasless-box2", "type": "rectangle", "x": 600, "y": 370, "width": 200, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#d0bfff", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "e2", "roundness": {"type":3},
+      "seed": 37, "version": 1, "versionNonce": 38, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "gasless-label2", "type": "text", "x": 620, "y": 380, "width": 160, "height": 30,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "e3", "roundness": null,
+      "seed": 39, "version": 1, "versionNonce": 40, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "StarkZap SDK\nGasless via AVNU Paymaster", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "arrow-merge-left", "type": "arrow", "x": 180, "y": 420, "width": 200, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "f0", "roundness": {"type":2},
+      "seed": 41, "version": 1, "versionNonce": 42, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[200,50]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "arrow-merge-right", "type": "arrow", "x": 700, "y": 420, "width": -200, "height": 50,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "f1", "roundness": {"type":2},
+      "seed": 43, "version": 1, "versionNonce": 44, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "points": [[0,0],[-200,50]], "startArrowhead": null, "endArrowhead": "arrow", "angle": 0
+    },
+    {
+      "id": "trade-box", "type": "rectangle", "x": 300, "y": 470, "width": 280, "height": 60,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#ffd43b", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "g0", "roundness": {"type":3},
+      "seed": 45, "version": 1, "versionNonce": 46, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false, "angle": 0
+    },
+    {
+      "id": "trade-label", "type": "text", "x": 320, "y": 480, "width": 240, "height": 40,
+      "strokeColor": "#1e1e1e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "g1", "roundness": null,
+      "seed": 47, "version": 1, "versionNonce": 48, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Browse Markets + Trade\nSign orders, engine matches, settled on-chain", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "middle", "angle": 0
+    },
+    {
+      "id": "note", "type": "text", "x": 80, "y": 560, "width": 700, "height": 50,
+      "strokeColor": "#868e96", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 1, "opacity": 100,
+      "groupIds": [], "frameId": null, "index": "h0", "roundness": null,
+      "seed": 49, "version": 1, "versionNonce": 50, "isDeleted": false,
+      "boundElements": null, "updated": 1706659200000, "link": null, "locked": false,
+      "text": "Both paths converge: users get the same experience regardless of wallet type.\nNo ETH needed for gas. No wallet extension needed for social login users.\nTrade clicks = sign order + POST to engine (no on-chain tx from user).", "fontSize": 12, "fontFamily": 5,
+      "textAlign": "center", "verticalAlign": "top", "angle": 0
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": 20
+  },
+  "files": {}
+}

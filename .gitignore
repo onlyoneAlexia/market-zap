@@ -83,5 +83,5 @@ GASLESS-PAYMASTER-PLAN.md
 MARKET_ZAP_*.md
 docs/plans/
 docs/design-variants/
-diagrams/*
-!diagrams/01-system-architecture.excalidraw
+
+
