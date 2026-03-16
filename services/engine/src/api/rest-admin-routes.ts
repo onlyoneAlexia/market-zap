@@ -409,7 +409,6 @@ export function registerAdminRoutes(
 
   router.post(
     "/api/starknet-rpc",
-    requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
       const payload = JSON.stringify(req.body);
       let lastError: string | null = null;
