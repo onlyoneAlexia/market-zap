@@ -95,7 +95,13 @@ async function loadHomeStats(): Promise<{
   traders: string;
 }> {
   const defaults = { totalVolume: "$0", markets: "0", traders: "0" };
-  const internal = process.env.ENGINE_INTERNAL_URL || "http://localhost:3001";
+  const internal =
+    process.env.ENGINE_INTERNAL_URL ||
+    (() => {
+      const pub = process.env.NEXT_PUBLIC_ENGINE_URL;
+      if (pub?.startsWith("http")) return pub.replace(/\/api\/?$/, "");
+      return "http://localhost:3001";
+    })();
   const base = `${internal.replace(/\/+$/, "")}/api`;
 
   try {

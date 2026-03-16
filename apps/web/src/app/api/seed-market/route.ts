@@ -91,7 +91,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const ENGINE_INTERNAL = process.env.ENGINE_INTERNAL_URL || "http://localhost:3001";
+  const ENGINE_INTERNAL =
+    process.env.ENGINE_INTERNAL_URL ||
+    // In production (Vercel), derive from the public engine URL if set
+    (() => {
+      const pub = process.env.NEXT_PUBLIC_ENGINE_URL;
+      // Absolute URL like "https://api.marketzap.app/api" → strip /api suffix
+      if (pub?.startsWith("http")) return pub.replace(/\/api\/?$/, "");
+      return "http://localhost:3001";
+    })();
   const ENGINE_URL = `${ENGINE_INTERNAL}/api`;
   const API_KEY = process.env.ENGINE_API_KEY;
 
