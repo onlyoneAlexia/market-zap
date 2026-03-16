@@ -3,6 +3,7 @@ import "@/styles/globals.css";
 import { Providers } from "@/components/layout/providers";
 import { Navbar } from "@/components/layout/navbar";
 import { ConnectModalHost } from "@/components/layout/connect-modal-host";
+import { Footer } from "@/components/layout/footer";
 import { WarpGrid } from "@/components/ui/warp-grid";
 import { Space_Grotesk, Outfit, JetBrains_Mono } from "next/font/google";
 
@@ -70,6 +71,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Navbar />
             <WarpGrid />
             <main className="relative z-[1] flex-1">{children}</main>
+            <Footer />
           </div>
           <ConnectModalHost />
         </Providers>
