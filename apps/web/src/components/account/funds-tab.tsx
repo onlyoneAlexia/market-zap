@@ -158,10 +158,10 @@ export function FundsTab() {
     try {
       const c = await ensureConnected();
       // Mint + approve + deposit in one multicall (gasless if wallet supports it)
-      const result = await c.mintAndDeposit(parseToken("1000", decimals));
+      const result = await c.mintAndDeposit(parseToken("100", decimals));
       if (!result.success) throw new Error(result.error ?? "Faucet failed");
       const gasNote = c.getState().gasless ? " (gasless)" : "";
-      toast({ title: `Got 1,000 ${selectedToken.symbol}`, description: `Minted & deposited${gasNote}. Tx: ${shortenAddress(result.txHash)}`, variant: "success" });
+      toast({ title: `Got 100 ${selectedToken.symbol}`, description: `Minted & deposited${gasNote}. Tx: ${shortenAddress(result.txHash)}`, variant: "success" });
       await invalidateAndPoll();
     } catch (err) {
       toast({ title: "Faucet failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -269,7 +269,7 @@ export function FundsTab() {
                           Testnet only
                         </span>
                       </div>
-                      <p className="text-[11px] font-mono text-muted-foreground">Get 1,000 USDC deposited to your exchange balance</p>
+                      <p className="text-[11px] font-mono text-muted-foreground">Get 100 USDC deposited to your exchange balance</p>
                     </div>
                     <Button onClick={handleFaucet} disabled={faucetLoading} variant="outline">
                       {faucetLoading ? <Spinner className="mr-2 h-4 w-4 animate-spin" weight="bold" /> : null}
