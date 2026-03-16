@@ -55,6 +55,7 @@ services:
       ENGINE_API_KEY: ${ENGINE_API_KEY:?Set ENGINE_API_KEY in .env}
       SKIP_BALANCE_CHECK: ${SKIP_BALANCE_CHECK:-false}
       INDEXER_START_BLOCK: ${INDEXER_START_BLOCK:-}
+      ENABLE_MANUAL_MARKET_SEEDING: ${ENABLE_MANUAL_MARKET_SEEDING:-true}
       TRUST_PROXY: "1"
     volumes:
       - ./admin.keystore.json:/keystore/admin.keystore.json:ro
