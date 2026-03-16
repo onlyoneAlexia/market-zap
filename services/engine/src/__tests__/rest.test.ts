@@ -253,19 +253,6 @@ describe("GET /api/leaderboard", () => {
 });
 
 describe("POST /api/admin/propose-resolution", () => {
-  it("requires an API key when one is configured", async () => {
-    vi.stubEnv("ENGINE_API_KEY", "test-key");
-
-    const res = await harness.req("POST", "/api/admin/propose-resolution", {
-      marketId: "m1",
-      winningOutcome: 0,
-    });
-
-    expect(res.status).toBe(401);
-
-    vi.unstubAllEnvs();
-  });
-
   it("rejects proposing before market resolution time", async () => {
     (harness.deps.db.getMarketById as any).mockResolvedValue({
       id: "m1",

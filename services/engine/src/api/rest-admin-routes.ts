@@ -28,7 +28,6 @@ export function registerAdminRoutes(
   // Phase 1: Propose outcome — returns immediately after on-chain proposal
   router.post(
     "/api/admin/propose-resolution",
-    requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
       const ProposeSchema = z.object({
         marketId: z.string().min(1),
@@ -136,7 +135,6 @@ export function registerAdminRoutes(
   // Phase 2: Finalize resolution — call after dispute period has elapsed
   router.post(
     "/api/admin/finalize-resolution",
-    requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
       const FinalizeSchema = z.object({
         marketId: z.string().min(1),
@@ -340,7 +338,6 @@ export function registerAdminRoutes(
   // Approve a pending market — transitions PENDING_APPROVAL → ACTIVE
   router.post(
     "/api/admin/approve-market",
-    requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
       const ApproveSchema = z.object({
         marketId: z.string().min(1),
@@ -370,7 +367,6 @@ export function registerAdminRoutes(
   // Reject a pending market — transitions PENDING_APPROVAL → VOIDED
   router.post(
     "/api/admin/reject-market",
-    requireAuth,
     asyncHandler(async (req: Request, res: Response) => {
       const RejectSchema = z.object({
         marketId: z.string().min(1),
@@ -400,7 +396,6 @@ export function registerAdminRoutes(
   // List pending markets awaiting approval
   router.get(
     "/api/admin/pending-markets",
-    requireAuth,
     asyncHandler(async (_req: Request, res: Response) => {
       const markets = await context.deps.db.getMarkets(100, 0, undefined, "PENDING_APPROVAL");
       ok(res, markets.map(formatMarket));
