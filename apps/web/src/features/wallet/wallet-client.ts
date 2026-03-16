@@ -8,7 +8,7 @@ import {
 } from "@market-zap/shared";
 import { useAppStore } from "@/hooks/use-store";
 import {
-  ENGINE_RPC_PROXY,
+  STARKNET_RPC_URL,
   SN_SEPOLIA_CHAIN_ID,
   STARKNET_SEPOLIA_LABEL,
   normalizeWalletAddress,
@@ -101,7 +101,7 @@ export async function getClient(): Promise<MarketZapWalletType> {
   starkzapClientPromise = import("@market-zap/shared")
     .then(({ MarketZapWallet }) => {
       const client = new MarketZapWallet("sepolia", {
-        rpcUrl: ENGINE_RPC_PROXY,
+        rpcUrl: STARKNET_RPC_URL,
         feeMode: "sponsored",
       });
       starkzapClient = client;
@@ -127,6 +127,7 @@ export async function getCartridgeClient(): Promise<MarketZapWalletType> {
   cartridgeClientPromise = import("@market-zap/shared")
     .then(({ MarketZapWallet }) => {
       const client = new MarketZapWallet("sepolia", {
+        rpcUrl: STARKNET_RPC_URL,
         feeMode: "user_pays",
       });
       cartridgeClient = client;

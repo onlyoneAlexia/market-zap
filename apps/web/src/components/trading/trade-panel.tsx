@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useWallet } from "@/features/wallet/use-wallet";
 import { useSubmitOrder } from "@/hooks/use-order";
-import { useBalance } from "@/hooks/use-balance";
+import { useWalletUSDCBalance, useExchangeBalance } from "@/hooks/use-wallet-balance";
 import { useQuote } from "@/hooks/use-quote";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useToast } from "@/hooks/use-toast";
@@ -122,16 +122,14 @@ export const TradePanel = React.memo(function TradePanel({
   const tokenSymbol = tokenInfo?.symbol ?? "USDC";
   const decimals = tokenInfo?.decimals ?? 6;
 
-  // Engine-computed balances:
-  // - `available` is on-chain exchange balance minus pending (unsettled) costs.
-  // - `walletBalance` is informational wallet ERC-20 balance.
-  const { data: balanceData } = useBalance(collateralToken);
-  const exchangeAvailableRaw = balanceData?.available !== undefined ? BigInt(balanceData.available) : undefined;
-  const walletBalanceRaw = balanceData?.walletBalance !== undefined ? BigInt(balanceData.walletBalance) : undefined;
+  // On-chain balances via direct RPC (no engine dependency)
+  const { data: walletBalStr } = useWalletUSDCBalance(collateralToken);
+  const { data: exchangeBalRaw } = useExchangeBalance(collateralToken);
+  const exchangeAvailableRaw = exchangeBalRaw != null ? BigInt(exchangeBalRaw) : undefined;
+  const walletBalanceRaw = walletBalStr != null ? BigInt(walletBalStr) : undefined;
 
-  // Use on-chain decimals for wallet balance (may differ from engine's internal decimals)
-  const walletDec = balanceData?.walletDecimals ?? decimals;
-  const exchangeDec = balanceData?.exchangeDecimals ?? decimals;
+  const walletDec = decimals;
+  const exchangeDec = decimals;
 
   const availableBalance = exchangeAvailableRaw !== undefined ? (Number(exchangeAvailableRaw) / 10 ** exchangeDec).toFixed(2) : null;
   const walletBalance = walletBalanceRaw !== undefined ? (Number(walletBalanceRaw) / 10 ** walletDec).toFixed(2) : null;

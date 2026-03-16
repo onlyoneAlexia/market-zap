@@ -17,8 +17,10 @@ import {
   AnimatedTabsContent,
 } from "@/components/ui/animated-tabs";
 import { useWallet } from "@/features/wallet/use-wallet";
-import { useBalance } from "@/hooks/use-balance";
 import {
+  useWalletUSDCBalance,
+  useExchangeBalance,
+  useExchangeReserved,
   useInvalidateBalances,
   useInvalidateAndPoll,
 } from "@/hooks/use-wallet-balance";
@@ -130,10 +132,14 @@ export function FundsTab() {
   const tokenAddress = selectedToken.addresses.sepolia;
   const decimals = selectedToken.decimals;
 
-  const { data: balanceData, isLoading: balanceLoading, isError: balanceError } = useBalance(tokenAddress);
-  const walletBalance = balanceData?.walletBalance !== undefined ? BigInt(balanceData.walletBalance) : undefined;
-  const exchangeBalance = balanceData?.available !== undefined ? BigInt(balanceData.available) : undefined;
-  const reservedBalance = balanceData?.reserved !== undefined ? BigInt(balanceData.reserved) : undefined;
+  const { data: walletBalanceRaw, isLoading: walletLoading, isError: walletError } = useWalletUSDCBalance(tokenAddress);
+  const { data: exchangeBalanceRaw, isLoading: exchangeLoading, isError: exchangeError } = useExchangeBalance(tokenAddress);
+  const { data: reservedBalanceRaw, isLoading: reservedLoading, isError: reservedError } = useExchangeReserved(tokenAddress);
+  const walletBalance = walletBalanceRaw != null ? BigInt(walletBalanceRaw) : undefined;
+  const exchangeBalance = exchangeBalanceRaw != null ? BigInt(exchangeBalanceRaw) : undefined;
+  const reservedBalance = reservedBalanceRaw != null ? BigInt(reservedBalanceRaw) : undefined;
+  const balanceLoading = walletLoading || exchangeLoading || reservedLoading;
+  const balanceError = walletError || exchangeError || reservedError;
 
   const [faucetLoading, setFaucetLoading] = useState(false);
   const [depositAmount, setDepositAmount] = useState("");

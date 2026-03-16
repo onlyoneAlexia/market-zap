@@ -41,7 +41,8 @@ export function useExchangeBalance(tokenAddress?: string) {
     queryKey: ["exchange-balance", token, address],
     queryFn: async () => {
       const client = getClientSync() ?? await getClient();
-      return client.getExchangeBalance(address!, token);
+      const bal = await client.getExchangeBalance(address!, token);
+      return bal.toString();
     },
     enabled: isConnected && !!address,
     staleTime: 15_000,
@@ -57,7 +58,8 @@ export function useExchangeReserved(tokenAddress?: string) {
     queryKey: ["exchange-reserved", token, address],
     queryFn: async () => {
       const client = getClientSync() ?? await getClient();
-      return client.getExchangeReserved(address!, token);
+      const bal = await client.getExchangeReserved(address!, token);
+      return bal.toString();
     },
     enabled: isConnected && !!address,
     staleTime: 15_000,
@@ -72,7 +74,8 @@ export function useOutcomeTokenBalance(tokenId: bigint | undefined) {
     queryKey: ["outcome-token", tokenId?.toString(), address],
     queryFn: async () => {
       const client = getClientSync() ?? await getClient();
-      return client.getOutcomeTokenBalance(address!, tokenId!);
+      const bal = await client.getOutcomeTokenBalance(address!, tokenId!);
+      return bal.toString();
     },
     enabled: isConnected && !!address && tokenId !== undefined,
     staleTime: 15_000,

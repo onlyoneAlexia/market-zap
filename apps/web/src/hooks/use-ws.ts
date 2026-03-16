@@ -243,6 +243,9 @@ export function useGlobalWebSocket() {
             if (isWalletParticipant(buyer, seller)) {
               // Only refresh wallet-specific data for the participant.
               queryClient.invalidateQueries({ queryKey: ["balance"] });
+              queryClient.invalidateQueries({ queryKey: ["wallet-balance"] });
+              queryClient.invalidateQueries({ queryKey: ["exchange-balance"] });
+              queryClient.invalidateQueries({ queryKey: ["exchange-reserved"] });
               queryClient.invalidateQueries({ queryKey: ["portfolio"] });
 
               toastRef.current({
@@ -278,6 +281,9 @@ export function useGlobalWebSocket() {
             if (isWalletParticipant(buyer, seller)) {
               // Only participants need balance/portfolio/orders refresh + destructive toast.
               queryClient.invalidateQueries({ queryKey: ["balance"] });
+              queryClient.invalidateQueries({ queryKey: ["wallet-balance"] });
+              queryClient.invalidateQueries({ queryKey: ["exchange-balance"] });
+              queryClient.invalidateQueries({ queryKey: ["exchange-reserved"] });
               queryClient.invalidateQueries({ queryKey: ["portfolio"] });
               queryClient.invalidateQueries({ queryKey: ["orders"] });
               toastRef.current({

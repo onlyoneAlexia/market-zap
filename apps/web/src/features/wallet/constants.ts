@@ -1,18 +1,13 @@
 "use client";
 
-function resolveEngineRpcProxy(): string {
-  const raw = process.env.NEXT_PUBLIC_ENGINE_URL || "/engine-api";
-  const suffix = "/starknet-rpc";
-  if (/^https?:\/\//.test(raw)) {
-    return raw + suffix;
-  }
-  if (typeof window !== "undefined") {
-    return `${window.location.origin}${raw}${suffix}`;
-  }
-  return `http://localhost:3000${raw}${suffix}`;
-}
-
-export const ENGINE_RPC_PROXY = resolveEngineRpcProxy();
+/**
+ * Direct Starknet RPC URL for on-chain reads (balances, allowances, contract calls).
+ * Uses NEXT_PUBLIC_STARKNET_RPC_URL from env if set, otherwise falls back to
+ * a hardcoded public Zan endpoint. No engine proxy dependency.
+ */
+export const STARKNET_RPC_URL =
+  process.env.NEXT_PUBLIC_STARKNET_RPC_URL ||
+  "https://api.zan.top/public/starknet-sepolia/rpc/v0_8";
 
 export const SN_SEPOLIA_CHAIN_ID = "0x534e5f5345504f4c4941";
 export const STARKNET_SEPOLIA_LABEL = "SN_SEPOLIA";
