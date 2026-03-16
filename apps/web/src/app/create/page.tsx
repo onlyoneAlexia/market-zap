@@ -110,7 +110,7 @@ export default function CreateMarketPage() {
   } = useWalletUSDCBalance(usdcAddress);
   const walletBalance = walletBalanceRaw != null ? BigInt(walletBalanceRaw) : undefined;
   const balanceLoaded = walletBalance !== undefined;
-  const hasEnoughBalance = !balanceLoaded || walletBalance >= bondAmount;
+  const hasEnoughBalance = balanceLoaded ? walletBalance >= bondAmount : !isConnected;
   const balanceDisplay = balanceLoaded ? (Number(walletBalance) / bondDivisor).toFixed(2) : null;
   const normalizedQuestion = question.trim();
   const normalizedCriteria = resolutionCriteria.trim();
@@ -179,13 +179,13 @@ export default function CreateMarketPage() {
     !resolutionDate ? "Set an expiry date" : !hasResolutionTime ? "Set a valid expiry date" : null,
   ].filter((message): message is string => Boolean(message));
   const showValidationErrors = !isValid && (question || category || resolutionDate);
-  const submitDisabled = !isValid || isSubmitting || (isConnected && balanceLoading) || (isConnected && balanceLoaded && !hasEnoughBalance);
+  const submitDisabled = !isValid || isSubmitting || (isConnected && balanceLoading) || (isConnected && !hasEnoughBalance);
   const submitLabel = !isConnected
     ? "Connect Wallet"
     : balanceLoading
       ? "Checking balance..."
-      : balanceLoaded && !hasEnoughBalance
-        ? "Insufficient USDC"
+      : !hasEnoughBalance
+        ? balanceLoaded ? "Insufficient USDC" : "Balance unavailable"
         : isSubmitting
           ? submitStep || "Executing..."
           : `Create Market [${bondDisplay} USDC Bond]`;
@@ -221,7 +221,10 @@ export default function CreateMarketPage() {
       const latestBalance = latestBalanceResult.data != null
         ? BigInt(latestBalanceResult.data)
         : walletBalance;
-      if (latestBalance !== undefined && latestBalance < bondAmount) {
+      if (latestBalance === undefined) {
+        throw new Error("Unable to verify USDC balance. Please try again.");
+      }
+      if (latestBalance < bondAmount) {
         const have = (Number(latestBalance) / bondDivisor).toFixed(2);
         throw new Error(`Insufficient USDC balance: you have ${have} but need ${bondDisplay}`);
       }
