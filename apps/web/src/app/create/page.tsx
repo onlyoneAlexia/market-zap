@@ -379,7 +379,7 @@ export default function CreateMarketPage() {
             <div className={`rounded border px-3 py-2 text-[10px] font-mono leading-relaxed transition-all duration-1000 ${t.bondBox}`}>
               <span className={`font-bold tracking-wider ${t.bondLabel}`}>Sepolia beta.</span>{" "}
               <span className={`${t.accentMuted}`}>
-                Use test funds only. Public markets are discoverable in browse, while dark markets stay hidden and are shared by direct link.
+                Use test funds only. Public markets require admin approval before appearing in the marketplace. Dark markets are active immediately and shared by direct link.
               </span>
             </div>
 

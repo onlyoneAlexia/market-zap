@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ShieldCheck, Clock, Spinner, CheckCircle, Warning } from "@phosphor-icons/react";
+import { ShieldCheck, Clock, Spinner, CheckCircle, Warning, HourglassHigh, Check, X } from "@phosphor-icons/react";
 import { PageTransition } from "@/components/ui/page-transition";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/hooks/use-store";
 import { useIsOperator } from "@/hooks/use-operator";
 import { useMarkets } from "@/hooks/use-market";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 export default function ResolvePage() {
@@ -28,6 +28,41 @@ export default function ResolvePage() {
     outcomeLabel: string;
     question: string;
   } | null>(null);
+
+  // ── Pending markets awaiting approval ──
+  const { data: pendingMarkets, isLoading: pendingLoading } = useQuery({
+    queryKey: ["admin", "pending-markets"],
+    queryFn: () => api.getPendingMarkets(),
+    enabled: isAdmin,
+    refetchInterval: 30_000,
+  });
+
+  const handleApprove = async (marketId: string) => {
+    setPendingAction(`approve-${marketId}`);
+    try {
+      await api.approveMarket(marketId);
+      toast({ title: "Market approved", description: "Market is now active and visible in the marketplace." });
+      queryClient.invalidateQueries({ queryKey: ["admin", "pending-markets"] });
+      queryClient.invalidateQueries({ queryKey: ["markets"] });
+    } catch (err) {
+      toast({ title: "Approval failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const handleReject = async (marketId: string) => {
+    setPendingAction(`reject-${marketId}`);
+    try {
+      await api.rejectMarket(marketId);
+      toast({ title: "Market rejected", description: "Market has been voided." });
+      queryClient.invalidateQueries({ queryKey: ["admin", "pending-markets"] });
+    } catch (err) {
+      toast({ title: "Rejection failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setPendingAction(null);
+    }
+  };
 
   // Markets past resolution time that haven't been resolved/voided
   const now = Math.floor(Date.now() / 1000);
@@ -112,12 +147,85 @@ export default function ResolvePage() {
       <div className="mb-6">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-primary" weight="duotone" />
-          <h1 className="font-heading text-xl font-bold tracking-wider">Resolve Markets</h1>
+          <h1 className="font-heading text-xl font-bold tracking-wider">Admin Dashboard</h1>
         </div>
         <p className="text-[10px] font-mono text-muted-foreground mt-0.5 tracking-wider">
-          Select winning outcome — resolution is irreversible
+          Approve pending markets &middot; Resolve expired markets
         </p>
       </div>
+
+      {/* Pending markets awaiting approval */}
+      {pendingLoading ? null : (pendingMarkets ?? []).length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-bold font-mono tracking-wider flex items-center gap-2">
+            <HourglassHigh className="h-4 w-4 text-cyan" weight="duotone" />
+            <span className="text-cyan">Pending Approval</span>
+            <Badge variant="outline" className="border-cyan/30 bg-cyan/10 text-cyan ml-1">
+              {(pendingMarkets ?? []).length}
+            </Badge>
+          </h2>
+          <div className="space-y-3">
+            {(pendingMarkets ?? []).map((market) => (
+              <Card key={market.id} className="border-cyan/30">
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-1 flex items-center gap-2">
+                        <Badge variant="outline" className="border-cyan/30 bg-cyan/10 text-cyan">
+                          Pending
+                        </Badge>
+                        <Badge variant="outline">{market.category}</Badge>
+                        {market.outcomes.length > 2 && (
+                          <Badge variant="outline">{market.outcomes.length} outcomes</Badge>
+                        )}
+                      </div>
+                      <h3 className="text-sm font-medium mt-1">{market.question}</h3>
+                      {market.resolutionTime > 0 && (
+                        <p className="text-[10px] font-mono text-muted-foreground tracking-wider mt-1">
+                          Resolves {new Date(market.resolutionTime * 1000).toLocaleString("en-US", {
+                            month: "short", day: "numeric", year: "numeric",
+                            hour: "2-digit", minute: "2-digit",
+                          })}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="default"
+                        className="gap-1"
+                        disabled={pendingAction !== null}
+                        onClick={() => handleApprove(market.id)}
+                      >
+                        {pendingAction === `approve-${market.id}` ? (
+                          <Spinner className="h-3.5 w-3.5 animate-spin" weight="bold" />
+                        ) : (
+                          <Check className="h-3.5 w-3.5" weight="bold" />
+                        )}
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="gap-1"
+                        disabled={pendingAction !== null}
+                        onClick={() => handleReject(market.id)}
+                      >
+                        {pendingAction === `reject-${market.id}` ? (
+                          <Spinner className="h-3.5 w-3.5 animate-spin" weight="bold" />
+                        ) : (
+                          <X className="h-3.5 w-3.5" weight="bold" />
+                        )}
+                        Reject
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Confirmation dialog */}
       {confirmTarget && (

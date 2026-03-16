@@ -625,6 +625,29 @@ export class MarketZapAPI {
       authHeaders,
     );
   }
+
+  // ── Market moderation ───────────────────────────────────────────────
+
+  async getPendingMarkets(apiKey?: string): Promise<Market[]> {
+    const authHeaders: Record<string, string> = apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : {};
+    return this.request<Market[]>("GET", "/admin/pending-markets", undefined, undefined, authHeaders);
+  }
+
+  async approveMarket(marketId: string, apiKey?: string): Promise<{ market: Market }> {
+    const authHeaders: Record<string, string> = apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : {};
+    return this.request<{ market: Market }>("POST", "/admin/approve-market", { marketId }, undefined, authHeaders);
+  }
+
+  async rejectMarket(marketId: string, apiKey?: string): Promise<{ market: Market }> {
+    const authHeaders: Record<string, string> = apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : {};
+    return this.request<{ market: Market }>("POST", "/admin/reject-market", { marketId }, undefined, authHeaders);
+  }
 }
 
 function extractErrorDetail(errorBody: unknown): string | null {
