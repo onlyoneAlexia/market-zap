@@ -3,7 +3,7 @@ import Image from "next/image";
 export function Footer() {
   return (
     <footer className="mt-auto border-t border-border/60 relative z-[1]">
-      <div className="container mx-auto flex max-w-screen-xl items-center justify-between px-4 py-4 text-[11px] font-mono text-muted-foreground">
+      <div className="container mx-auto flex max-w-screen-xl flex-col items-center gap-2 px-4 py-4 text-[11px] font-mono text-muted-foreground sm:flex-row sm:justify-between sm:gap-4">
         <div className="flex items-center gap-0">
           <svg width="24" height="20" viewBox="0 0 32 28" fill="none" className="shrink-0 -mr-0.5">
             <polyline
@@ -21,7 +21,7 @@ export function Footer() {
             arket<span className="text-primary">zap</span>
           </span>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
           <span className="flex items-center gap-1.5">
             Built on
             <a
