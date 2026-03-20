@@ -588,8 +588,8 @@ export class ApibaraIndexer {
     const category = feltToString(raw.data[categoryIdx]);
     const resolutionTime = Number(BigInt(raw.data[resTimeIdx]));
 
-    // Use on-chain market ID as the engine market ID (deterministic)
-    const marketId = `market-${onChainMarketId}`;
+    // Use raw on-chain market ID as the engine market ID (must match seed endpoint)
+    const marketId = onChainMarketId;
 
     // Default to binary outcomes — the event doesn't carry outcome labels,
     // but all current markets are Yes/No binary.

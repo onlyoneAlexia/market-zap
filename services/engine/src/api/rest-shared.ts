@@ -256,6 +256,7 @@ export function formatMarket(row: any) {
     bondRefunded: false,
     marketType: row.market_type ?? "public",
     thumbnailUrl: row.thumbnail_url ?? null,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
   };
 }
 

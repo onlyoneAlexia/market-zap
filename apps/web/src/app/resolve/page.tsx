@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ShieldCheck, Clock, Spinner, CheckCircle, Warning, HourglassHigh, Check, X } from "@phosphor-icons/react";
+import { useState, useEffect } from "react";
+import { ShieldCheck, Clock, Spinner, CheckCircle, Warning, HourglassHigh, Check, X, Timer } from "@phosphor-icons/react";
 import { PageTransition } from "@/components/ui/page-transition";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,29 @@ import { useIsOperator } from "@/hooks/use-operator";
 import { useMarkets } from "@/hooks/use-market";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+
+const DISPUTE_PERIOD_SECONDS = 3600; // 1 hour
+
+function formatCountdown(seconds: number): string {
+  if (seconds <= 0) return "now";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function useCountdown() {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
 
 export default function ResolvePage() {
   const wallet = useAppStore((s) => s.wallet);
@@ -64,9 +87,14 @@ export default function ResolvePage() {
     }
   };
 
-  // Markets past resolution time that haven't been resolved/voided
-  const now = Math.floor(Date.now() / 1000);
+  const now = useCountdown();
   const allMarkets = data?.items ?? [];
+
+  // Active markets approaching resolution (not yet resolvable)
+  const upcomingMarkets = allMarkets.filter(
+    (m) => m.resolutionTime > now && !m.resolved && !m.voided && m.status === "active",
+  );
+  // Markets past resolution time that haven't been resolved/voided
   const resolvableMarkets = allMarkets.filter(
     (m) => m.resolutionTime <= now && !m.resolved && !m.voided && m.status !== "proposed",
   );
@@ -227,6 +255,49 @@ export default function ResolvePage() {
         </div>
       )}
 
+      {/* Active markets with countdown to resolution */}
+      {upcomingMarkets.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-bold font-mono tracking-wider flex items-center gap-2">
+            <Timer className="h-4 w-4 text-muted-foreground" weight="duotone" />
+            <span>Upcoming Resolution</span>
+            <Badge variant="outline" className="ml-1">
+              {upcomingMarkets.length}
+            </Badge>
+          </h2>
+          <div className="space-y-3">
+            {upcomingMarkets
+              .sort((a, b) => a.resolutionTime - b.resolutionTime)
+              .map((market) => {
+                const secsLeft = market.resolutionTime - now;
+                return (
+                  <Card key={market.id} className="border-border/50">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-sm font-medium">{market.question}</h3>
+                          <div className="mt-1 flex items-center gap-3 text-[10px] font-mono text-muted-foreground tracking-wider">
+                            <Badge variant="outline">{market.category}</Badge>
+                            <span>Vol: ${(Number(market.totalVolume) / 1e6).toFixed(2)}</span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className={`text-xs font-mono font-bold ${secsLeft < 3600 ? "text-amber" : "text-muted-foreground"}`}>
+                            {formatCountdown(secsLeft)}
+                          </div>
+                          <div className="text-[9px] font-mono text-muted-foreground tracking-wider mt-0.5">
+                            until resolution
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
       {/* Confirmation dialog */}
       {confirmTarget && (
         <div className="mb-4 rounded border border-cyan/30 bg-cyan/5 p-4">
@@ -266,34 +337,46 @@ export default function ResolvePage() {
         <div className="mb-6">
           <h2 className="mb-3 text-sm font-bold font-mono tracking-wider text-amber">Awaiting Finalization</h2>
           <div className="space-y-3">
-            {proposedMarkets.map((market) => (
-              <Card key={market.id} className="border-amber/30">
-                <CardContent className="p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <Badge variant="outline" className="border-amber/30 bg-amber/10 text-amber mb-1">
-                        Proposed
-                      </Badge>
-                      <h3 className="text-sm font-medium">{market.question}</h3>
-                      <p className="text-[10px] font-mono text-muted-foreground tracking-wider mt-1">
-                        Dispute period must elapse before finalizing
-                      </p>
+            {proposedMarkets.map((market) => {
+              // Estimate finalization time: updatedAt (when status changed to PROPOSED) + dispute period
+              const proposedAt = (market as any).updatedAt
+                ? Math.floor(new Date((market as any).updatedAt).getTime() / 1000)
+                : 0;
+              const finalizeAt = proposedAt + DISPUTE_PERIOD_SECONDS;
+              const secsUntilFinalize = finalizeAt - now;
+              const canFinalize = secsUntilFinalize <= 0;
+
+              return (
+                <Card key={market.id} className="border-amber/30">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <Badge variant="outline" className="border-amber/30 bg-amber/10 text-amber mb-1">
+                          Proposed
+                        </Badge>
+                        <h3 className="text-sm font-medium">{market.question}</h3>
+                        <p className="text-[10px] font-mono text-muted-foreground tracking-wider mt-1">
+                          {canFinalize
+                            ? "Dispute period elapsed — ready to finalize"
+                            : `Finalize in ${formatCountdown(secsUntilFinalize)}`}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        disabled={pendingAction !== null || !canFinalize}
+                        onClick={() => handleFinalize(market.id)}
+                      >
+                        {pendingAction === `finalize-${market.id}` && (
+                          <Spinner className="mr-1 h-3.5 w-3.5 animate-spin" weight="bold" />
+                        )}
+                        Finalize
+                      </Button>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="default"
-                      disabled={pendingAction !== null}
-                      onClick={() => handleFinalize(market.id)}
-                    >
-                      {pendingAction === `finalize-${market.id}` && (
-                        <Spinner className="mr-1 h-3.5 w-3.5 animate-spin" weight="bold" />
-                      )}
-                      Finalize
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         </div>
       )}
@@ -302,7 +385,7 @@ export default function ResolvePage() {
         <div className="flex items-center justify-center py-20">
           <Spinner className="h-6 w-6 animate-spin text-muted-foreground" weight="bold" />
         </div>
-      ) : resolvableMarkets.length === 0 && proposedMarkets.length === 0 ? (
+      ) : resolvableMarkets.length === 0 && proposedMarkets.length === 0 && upcomingMarkets.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-sm text-muted-foreground">
           <CheckCircle className="mb-3 h-8 w-8 text-muted-foreground" weight="fill" />
           <p>All markets are up to date. Nothing to resolve.</p>
