@@ -9,6 +9,7 @@ import {
   parseSignature,
   scalePrice,
 } from "./settler-helpers.js";
+import { executeCallsWithAdaptiveL2Gas } from "./settler-execution.js";
 
 export interface BatchSettlementContext {
   account: Account;
@@ -31,14 +32,11 @@ export async function registerDarkMarket(
   onChainMarketId: string,
 ): Promise<SettlementResult> {
   try {
-    const response = await context.withRetry(
-      () =>
-        context.account.execute(
-          context.exchange.populate("register_dark_market", [BigInt(onChainMarketId)]),
-        ),
-      { label: `register_dark ${onChainMarketId}` },
+    const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+      context,
+      [context.exchange.populate("register_dark_market", [BigInt(onChainMarketId)])],
+      `register_dark ${onChainMarketId}`,
     );
-    const receipt = await context.provider.waitForTransaction(response.transaction_hash);
     if (getExecutionStatus(receipt) === "REVERTED") {
       const reason = getRevertReason(receipt) ?? "unknown";
       console.error(`[settler] register_dark_market REVERTED: ${reason}`);
@@ -126,13 +124,10 @@ export async function settleTradesAtomic(
       );
     }
 
-    const response = await context.withRetry(() => context.account.execute(calls), {
-      label: `batch settle (${trades.length} trades)`,
-    });
-
-    const receipt = await context.withRetry(
-      () => context.provider.waitForTransaction(response.transaction_hash),
-      { label: "batch confirm" },
+    const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+      context,
+      calls,
+      `batch settle (${trades.length} trades)`,
     );
 
     if (getExecutionStatus(receipt) === "REVERTED") {
@@ -228,13 +223,10 @@ export async function settleDarkTradesAtomic(
       );
     }
 
-    const response = await context.withRetry(() => context.account.execute(calls), {
-      label: `dark batch settle (${trades.length} trades)`,
-    });
-
-    const receipt = await context.withRetry(
-      () => context.provider.waitForTransaction(response.transaction_hash),
-      { label: "dark batch confirm" },
+    const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+      context,
+      calls,
+      `dark batch settle (${trades.length} trades)`,
     );
 
     if (getExecutionStatus(receipt) === "REVERTED") {

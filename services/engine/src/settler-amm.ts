@@ -4,12 +4,13 @@ import type { Trade } from "./matcher.js";
 import type { SettlementResult } from "./settler.js";
 import {
   buildCairoOrder,
-  getExecutionStatus,
   getFinalityStatus,
+  getExecutionStatus,
   getRevertReason,
   parseSignature,
   scalePrice,
 } from "./settler-helpers.js";
+import { executeCallsWithAdaptiveL2Gas } from "./settler-execution.js";
 
 export interface SettleAmmTradeAtomicParams {
   trade: Trade;
@@ -211,16 +212,13 @@ export async function settleAmmTradeAtomic(
         (needsSplit ? `, auto-split=${splitAmount}` : ""),
     );
 
-    const response = await context.withRetry(() => context.account.execute(calls), {
-      label: `amm-settle ${trade.id}`,
-    });
+    const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+      context,
+      calls,
+      `amm-settle ${trade.id}`,
+    );
 
     console.log(`[settler] AMM atomic tx submitted: ${response.transaction_hash}`);
-
-    const receipt = await context.withRetry(
-      () => context.provider.waitForTransaction(response.transaction_hash),
-      { label: `amm-confirm ${trade.id}` },
-    );
 
     if (getExecutionStatus(receipt) === "REVERTED") {
       const reason = getRevertReason(receipt) ?? "unknown";

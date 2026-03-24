@@ -27,6 +27,7 @@ import {
   scalePrice,
   signSeedOrder as signSeedOrderWithKey,
 } from "./settler-helpers.js";
+import { executeCallsWithAdaptiveL2Gas } from "./settler-execution.js";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -264,18 +265,18 @@ export class Settler {
         ]),
       ];
 
-      const response = await withRetry(
-        () => this.account.execute(calls),
-        { label: `settle ${trade.id}` },
+      const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+        {
+          account: this.account,
+          provider: this.provider,
+          withRetry,
+        },
+        calls,
+        `settle ${trade.id}`,
       );
 
       console.log(
         `[settler] atomic tx submitted: ${response.transaction_hash}`,
-      );
-
-      const receipt = await withRetry(
-        () => this.provider.waitForTransaction(response.transaction_hash),
-        { label: `confirm ${trade.id}` },
       );
 
       // Check for REVERTED status — waitForTransaction doesn't throw on revert.
@@ -373,17 +374,17 @@ export class Settler {
         ]),
       ];
 
-      const response = await withRetry(
-        () => this.account.execute(calls),
-        { label: `dark-settle ${trade.id}` },
+      const { response, receipt } = await executeCallsWithAdaptiveL2Gas(
+        {
+          account: this.account,
+          provider: this.provider,
+          withRetry,
+        },
+        calls,
+        `dark-settle ${trade.id}`,
       );
 
       console.log(`[settler] dark tx submitted: ${response.transaction_hash}`);
-
-      const receipt = await withRetry(
-        () => this.provider.waitForTransaction(response.transaction_hash),
-        { label: `dark-confirm ${trade.id}` },
-      );
 
       if (getExecutionStatus(receipt) === "REVERTED") {
         const reason = getRevertReason(receipt) ?? "unknown";
