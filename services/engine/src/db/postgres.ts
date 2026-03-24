@@ -30,6 +30,253 @@ export type {
 
 const { Pool } = pg;
 
+type MarketListSortColumn = "total_volume" | "created_at" | "resolution_time";
+type MarketListSortDirection = "ASC" | "DESC";
+
+export interface UpsertMarketInput {
+  marketId: string;
+  onChainMarketId?: string;
+  conditionId?: string;
+  title: string;
+  description?: string;
+  category?: string;
+  outcomeCount: number;
+  outcomeLabels: string[];
+  collateralToken: string;
+  resolutionSource?: string;
+  resolutionTime?: Date;
+  marketType?: "public" | "private";
+  thumbnailUrl?: string;
+  initialStatus?: MarketRow["status"];
+}
+
+function normalizeMarketIdentity(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
+function normalizeMarketTitle(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolutionTimeKey(value: Date | null | undefined): string | null {
+  if (!value) return null;
+  const timestamp = Math.floor(new Date(value).getTime() / 1000);
+  return Number.isFinite(timestamp) && timestamp > 0 ? String(timestamp) : null;
+}
+
+function parseBigIntSafe(value: string | null | undefined): bigint {
+  if (!value) return 0n;
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+}
+
+function parseDateMs(value: Date | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function pickNonEmptyString(
+  incoming: string | undefined,
+  existing: string | null | undefined,
+  fallback = "",
+): string {
+  const trimmedIncoming = incoming?.trim();
+  if (trimmedIncoming) return trimmedIncoming;
+  const trimmedExisting = existing?.trim();
+  if (trimmedExisting) return trimmedExisting;
+  return fallback;
+}
+
+export function areGenericOutcomeLabels(labels: string[] | null | undefined): boolean {
+  if (!labels || labels.length === 0) return true;
+
+  if (labels.length === 2) {
+    return labels[0] === "Yes" && labels[1] === "No";
+  }
+
+  return labels.every((label, index) => label === `Outcome ${index + 1}`);
+}
+
+export function selectOutcomeLabels(
+  existingLabels: string[] | null | undefined,
+  incomingLabels: string[],
+): string[] {
+  if (!existingLabels || existingLabels.length === 0) return incomingLabels;
+  if (incomingLabels.length === 0) return existingLabels;
+
+  if (areGenericOutcomeLabels(incomingLabels) && !areGenericOutcomeLabels(existingLabels)) {
+    return existingLabels;
+  }
+
+  return incomingLabels;
+}
+
+export function mergeMarketStatus(
+  existingStatus: MarketRow["status"] | null | undefined,
+  incomingStatus: MarketRow["status"],
+): MarketRow["status"] {
+  if (!existingStatus) return incomingStatus;
+
+  if (
+    existingStatus === "PAUSED" ||
+    existingStatus === "PROPOSED" ||
+    existingStatus === "RESOLVED" ||
+    existingStatus === "VOIDED"
+  ) {
+    return existingStatus;
+  }
+
+  if (incomingStatus === "PENDING_APPROVAL") {
+    return "PENDING_APPROVAL";
+  }
+
+  if (existingStatus === "PENDING_APPROVAL" && incomingStatus === "ACTIVE") {
+    return "PENDING_APPROVAL";
+  }
+
+  return incomingStatus;
+}
+
+export function getMarketDedupKey(
+  row: Pick<MarketRow, "market_id" | "title" | "resolution_time" | "on_chain_market_id" | "condition_id">,
+): string {
+  const title = normalizeMarketTitle(row.title);
+  if (title) {
+    const resolutionKey = resolutionTimeKey(row.resolution_time);
+    if (resolutionKey) return `title:${title}|resolution:${resolutionKey}`;
+    return `title:${title}`;
+  }
+
+  const onChain = normalizeMarketIdentity(row.on_chain_market_id);
+  if (onChain) return `onchain:${onChain}`;
+
+  const condition = normalizeMarketIdentity(row.condition_id);
+  if (condition) return `condition:${condition}`;
+
+  return `market:${row.market_id}`;
+}
+
+function getMarketRowQualityScore(
+  row: Pick<
+    MarketRow,
+    "status" | "category" | "description" | "thumbnail_url" | "outcome_labels"
+  >,
+): number {
+  let score = 0;
+
+  switch (row.status) {
+    case "ACTIVE":
+      score += 4;
+      break;
+    case "PROPOSED":
+      score += 3;
+      break;
+    case "PAUSED":
+      score += 2;
+      break;
+    case "PENDING_APPROVAL":
+      score += 1;
+      break;
+    default:
+      break;
+  }
+
+  if (row.category && row.category.trim().toLowerCase() !== "general") {
+    score += 2;
+  }
+  if (row.description && row.description.trim().length > 0) {
+    score += 2;
+  }
+  if (row.thumbnail_url) {
+    score += 1;
+  }
+  if (!areGenericOutcomeLabels(row.outcome_labels)) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function compareMarketRows(
+  left: MarketRow,
+  right: MarketRow,
+  sortCol: MarketListSortColumn,
+  sortDir: MarketListSortDirection,
+): number {
+  const direction = sortDir === "ASC" ? 1 : -1;
+  let primary = 0;
+
+  switch (sortCol) {
+    case "total_volume":
+      primary =
+        parseBigIntSafe(left.total_volume) > parseBigIntSafe(right.total_volume)
+          ? 1
+          : parseBigIntSafe(left.total_volume) < parseBigIntSafe(right.total_volume)
+            ? -1
+            : 0;
+      break;
+    case "resolution_time":
+      primary = parseDateMs(left.resolution_time) - parseDateMs(right.resolution_time);
+      break;
+    case "created_at":
+    default:
+      primary = parseDateMs(left.created_at) - parseDateMs(right.created_at);
+      break;
+  }
+
+  if (primary !== 0) {
+    return primary * direction;
+  }
+
+  const updatedDiff = parseDateMs(right.updated_at) - parseDateMs(left.updated_at);
+  if (updatedDiff !== 0) return updatedDiff;
+
+  const createdDiff = parseDateMs(right.created_at) - parseDateMs(left.created_at);
+  if (createdDiff !== 0) return createdDiff;
+
+  return left.market_id.localeCompare(right.market_id);
+}
+
+function preferredMarketRow(left: MarketRow, right: MarketRow): MarketRow {
+  const qualityDiff =
+    getMarketRowQualityScore(right) - getMarketRowQualityScore(left);
+  if (qualityDiff !== 0) {
+    return qualityDiff > 0 ? right : left;
+  }
+
+  const updatedDiff = parseDateMs(right.updated_at) - parseDateMs(left.updated_at);
+  if (updatedDiff !== 0) {
+    return updatedDiff > 0 ? right : left;
+  }
+
+  const createdDiff = parseDateMs(right.created_at) - parseDateMs(left.created_at);
+  if (createdDiff !== 0) {
+    return createdDiff > 0 ? right : left;
+  }
+
+  return right.market_id.localeCompare(left.market_id) < 0 ? right : left;
+}
+
+export function dedupeMarketRows(rows: MarketRow[]): MarketRow[] {
+  const deduped = new Map<string, MarketRow>();
+
+  for (const row of rows) {
+    const key = getMarketDedupKey(row);
+    const existing = deduped.get(key);
+    deduped.set(key, existing ? preferredMarketRow(existing, row) : row);
+  }
+
+  return Array.from(deduped.values());
+}
+
 // ---------------------------------------------------------------------------
 // Database class
 // ---------------------------------------------------------------------------
@@ -409,13 +656,15 @@ export class Database {
       createdAt: "created_at",
       resolutionTime: "resolution_time",
     };
-    const sortCol = sortColumnMap[options?.sortBy ?? ""] ?? "created_at";
+    const sortCol = (sortColumnMap[options?.sortBy ?? ""] ?? "created_at") as MarketListSortColumn;
     const sortDir = options?.sortOrder === "asc" ? "ASC" : "DESC";
-    query += ` ORDER BY ${sortCol} ${sortDir} LIMIT $${idx++} OFFSET $${idx++}`;
-    params.push(limit, offset);
+    query += ` ORDER BY ${sortCol} ${sortDir}, updated_at DESC, created_at DESC`;
 
     const result = await this.pool.query<MarketRow>(query, params);
-    return result.rows;
+    const dedupedRows = dedupeMarketRows(result.rows).sort((left, right) =>
+      compareMarketRows(left, right, sortCol, sortDir),
+    );
+    return dedupedRows.slice(offset, offset + limit);
   }
 
   async getMarketById(marketId: string): Promise<MarketRow | null> {
@@ -439,7 +688,10 @@ export class Database {
 
   async getMarketByOnChainMarketId(onChainMarketId: string): Promise<MarketRow | null> {
     const result = await this.pool.query<MarketRow>(
-      `SELECT * FROM markets WHERE on_chain_market_id = $1`,
+      `SELECT * FROM markets
+       WHERE on_chain_market_id = $1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
       [onChainMarketId],
     );
     return result.rows[0] ?? null;
@@ -457,6 +709,7 @@ export class Database {
              '0'
            )
          ) = $1
+       ORDER BY updated_at DESC, created_at DESC
        LIMIT 1`,
       [normalized],
     );
@@ -474,23 +727,20 @@ export class Database {
     return result.rows[0] ?? null;
   }
 
-  async upsertMarket(market: {
-    marketId: string;
-    onChainMarketId?: string;
-    conditionId?: string;
-    title: string;
-    description?: string;
-    category?: string;
-    outcomeCount: number;
-    outcomeLabels: string[];
-    collateralToken: string;
-    resolutionSource?: string;
-    resolutionTime?: Date;
-    marketType?: 'public' | 'private';
-    thumbnailUrl?: string;
-    initialStatus?: string;
-  }): Promise<MarketRow> {
-    const status = market.initialStatus ?? 'ACTIVE';
+  async upsertMarket(market: UpsertMarketInput): Promise<MarketRow> {
+    const existingByOnChain = market.onChainMarketId
+      ? await this.getMarketByOnChainMarketId(market.onChainMarketId)
+      : null;
+    const existing =
+      existingByOnChain ??
+      (market.conditionId
+        ? await this.getMarketByConditionId(market.conditionId)
+        : null);
+
+    const status = mergeMarketStatus(existing?.status, market.initialStatus ?? "ACTIVE");
+    const outcomeLabels = selectOutcomeLabels(existing?.outcome_labels, market.outcomeLabels);
+    const marketId = existing?.market_id ?? market.marketId;
+
     const result = await this.pool.query<MarketRow>(
       `INSERT INTO markets
          (market_id, on_chain_market_id, condition_id, title, description, category, outcome_count,
@@ -499,25 +749,33 @@ export class Database {
        ON CONFLICT (market_id) DO UPDATE SET
          on_chain_market_id = COALESCE(EXCLUDED.on_chain_market_id, markets.on_chain_market_id),
          condition_id = COALESCE(EXCLUDED.condition_id, markets.condition_id),
+         title = EXCLUDED.title,
+         description = EXCLUDED.description,
+         category = EXCLUDED.category,
+         outcome_count = EXCLUDED.outcome_count,
+         outcome_labels = EXCLUDED.outcome_labels,
+         collateral_token = EXCLUDED.collateral_token,
+         resolution_source = EXCLUDED.resolution_source,
          resolution_time = COALESCE(EXCLUDED.resolution_time, markets.resolution_time),
          market_type = COALESCE(EXCLUDED.market_type, markets.market_type),
          thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, markets.thumbnail_url),
+         status = EXCLUDED.status,
          updated_at = NOW()
        RETURNING *`,
       [
-        market.marketId,
-        market.onChainMarketId ?? null,
-        market.conditionId ?? null,
-        market.title,
-        market.description ?? "",
-        market.category ?? "general",
-        market.outcomeCount,
-        market.outcomeLabels,
-        market.collateralToken,
-        market.resolutionSource ?? "",
-        market.resolutionTime ?? null,
-        market.marketType ?? 'public',
-        market.thumbnailUrl ?? null,
+        marketId,
+        market.onChainMarketId ?? existing?.on_chain_market_id ?? null,
+        market.conditionId ?? existing?.condition_id ?? null,
+        pickNonEmptyString(market.title, existing?.title, marketId),
+        pickNonEmptyString(market.description, existing?.description),
+        pickNonEmptyString(market.category, existing?.category, "general"),
+        outcomeLabels.length > 0 ? outcomeLabels.length : market.outcomeCount,
+        outcomeLabels,
+        pickNonEmptyString(market.collateralToken, existing?.collateral_token),
+        pickNonEmptyString(market.resolutionSource, existing?.resolution_source),
+        market.resolutionTime ?? existing?.resolution_time ?? null,
+        market.marketType ?? existing?.market_type ?? "public",
+        market.thumbnailUrl ?? existing?.thumbnail_url ?? null,
         status,
       ],
     );
