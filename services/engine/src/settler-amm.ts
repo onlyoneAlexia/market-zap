@@ -82,19 +82,18 @@ export async function settleAmmTradeAtomic(
     let splitAmount = 0n;
 
     if (needsSplit) {
-      splitAmount = (fillAmount - adminOutcomeBalance) * 2n;
+      // split_position(amount) consumes `amount` collateral and mints
+      // `amount` of each outcome token, so we only need to split the shortfall.
+      splitAmount = fillAmount - adminOutcomeBalance;
 
       const totalUsdcAvailable = adminWalletBalance + adminExchangeBalance;
       if (totalUsdcAvailable < splitAmount) {
-        splitAmount = fillAmount - adminOutcomeBalance;
-        if (totalUsdcAvailable < splitAmount) {
-          return {
-            tradeId: trade.id,
-            txHash: "",
-            success: false,
-            error: `Insufficient admin solvency: need ${splitAmount} USDC for split, have ${totalUsdcAvailable} total`,
-          };
-        }
+        return {
+          tradeId: trade.id,
+          txHash: "",
+          success: false,
+          error: `Insufficient admin solvency: need ${splitAmount} USDC for split, have ${totalUsdcAvailable} total`,
+        };
       }
 
       console.log(
