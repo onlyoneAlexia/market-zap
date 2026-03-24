@@ -174,6 +174,9 @@ export class MarketZapWallet {
       // receipt polling through StarkZap's configured RPC provider.
       getProvider: () => rpcProvider as any,
       execute: async (calls: Call[]) => {
+        // WalletAccount.execute (Argent X / Braavos) only accepts `calls` and
+        // ignores any extra args like resourceBounds — the wallet handles fee
+        // estimation internally. We just forward the calls as-is.
         const result = await account.execute(calls as any);
         // Braavos / ArgentX may return { hash }, { transactionHash }, or { transaction_hash }
         const txHash =
@@ -471,7 +474,12 @@ export class MarketZapWallet {
   }
 
   /**
-   * Testnet faucet: mint USDC + approve exchange + deposit — all gasless in one multicall.
+   * Testnet faucet: mint USDC + approve exchange + deposit.
+   *
+   * Some browser wallets (notably Argent X) underestimate L2 gas for heavy
+   * multicalls. We try the 3-call multicall first; if it fails with an
+   * "Insufficient max L2Gas" error, we retry as two lighter transactions
+   * so wallets that handle it fine (Braavos) aren't penalised.
    */
   async mintAndDeposit(amount: bigint): Promise<TransactionResult> {
     if (!this.wallet) throw new Error("Wallet not connected");
@@ -479,23 +487,36 @@ export class MarketZapWallet {
     const usdcAddress = getContractAddress("USDC", this.network);
     const exchangeAddress = getContractAddress("CLOBRouter", this.network);
 
-    return this.submitCalls([
-      {
-        contractAddress: usdcAddress,
-        entrypoint: "mint",
-        calldata: [address, amount.toString(), "0"],
-      },
-      {
-        contractAddress: usdcAddress,
-        entrypoint: "approve",
-        calldata: [exchangeAddress, MarketZapWallet.MAX_APPROVAL_LOW, MarketZapWallet.MAX_APPROVAL_HIGH],
-      },
-      {
-        contractAddress: exchangeAddress,
-        entrypoint: "deposit",
-        calldata: [usdcAddress, amount.toString(), "0"],
-      },
-    ]);
+    const mintCall: Call = {
+      contractAddress: usdcAddress,
+      entrypoint: "mint",
+      calldata: [address, amount.toString(), "0"],
+    };
+    const approveCall: Call = {
+      contractAddress: usdcAddress,
+      entrypoint: "approve",
+      calldata: [exchangeAddress, MarketZapWallet.MAX_APPROVAL_LOW, MarketZapWallet.MAX_APPROVAL_HIGH],
+    };
+    const depositCall: Call = {
+      contractAddress: exchangeAddress,
+      entrypoint: "deposit",
+      calldata: [usdcAddress, amount.toString(), "0"],
+    };
+
+    // Try the single multicall first (works for Braavos, Cartridge, dev).
+    const result = await this.submitCalls([mintCall, approveCall, depositCall]);
+    if (result.success) return result;
+
+    // If the multicall failed with an L2 gas error, split into two lighter
+    // transactions so wallets with tight gas estimation (Argent X) can cope.
+    if (result.error && /insufficient.*l2.?gas/i.test(result.error)) {
+      console.warn("[wallet] Multicall hit L2 gas limit, retrying as split transactions");
+      const mintResult = await this.submitCalls([mintCall]);
+      if (!mintResult.success) return mintResult;
+      return this.submitCalls([approveCall, depositCall]);
+    }
+
+    return result;
   }
 
   /** Mint test USDC (Sepolia only). */

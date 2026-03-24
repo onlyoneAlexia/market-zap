@@ -139,3 +139,28 @@ export function getWalletObject(
 
   return getEnumeratedWalletObject(provider, globalObject);
 }
+
+/**
+ * Waits for a browser extension wallet to inject its window object.
+ * Extensions inject asynchronously, so this polls briefly before giving up.
+ */
+export async function waitForWalletObject(
+  provider: ExtensionWalletProvider,
+  { timeoutMs = 3000, intervalMs = 200 } = {},
+): Promise<StarknetWalletObject | undefined> {
+  const existing = getWalletObject(provider);
+  if (existing) {
+    return existing;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  return new Promise<StarknetWalletObject | undefined>((resolve) => {
+    const timer = setInterval(() => {
+      const wallet = getWalletObject(provider);
+      if (wallet || Date.now() >= deadline) {
+        clearInterval(timer);
+        resolve(wallet);
+      }
+    }, intervalMs);
+  });
+}

@@ -16,6 +16,7 @@ import {
 import {
   getWalletDisplayName,
   getWalletObject,
+  waitForWalletObject,
   isExtensionProvider,
   type ExtensionWalletProvider,
   type WalletProvider,
@@ -214,10 +215,15 @@ export async function connectExtensionWallet(
   client: MarketZapWalletType,
   setWallet: SetWallet,
 ): Promise<MarketZapWalletType> {
-  const walletObject = getWalletObject(provider);
+  // Extensions inject their window objects asynchronously — wait briefly
+  // before giving up so we don't race the injection.
+  const walletObject = await waitForWalletObject(provider);
 
   if (!walletObject) {
-    throw new Error(`${getWalletDisplayName(provider)} extension not detected`);
+    const name = getWalletDisplayName(provider);
+    throw new Error(
+      `${name} extension not detected. Please install the ${name} browser extension and refresh the page.`,
+    );
   }
 
   // Reuse the injected extension session when the account is already exposed.
@@ -317,7 +323,9 @@ export async function restoreWalletConnection(
     const client = await getClient();
 
     if (isExtensionProvider(provider)) {
-      const walletObject = getWalletObject(provider);
+      // Extensions inject asynchronously — wait briefly on reconnect too,
+      // otherwise a slow-injecting wallet causes us to wipe persisted state.
+      const walletObject = await waitForWalletObject(provider);
       if (!walletObject) {
         disconnectWallet();
         return null;

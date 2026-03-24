@@ -463,6 +463,17 @@ export class Database {
     return result.rows[0] ?? null;
   }
 
+  async findMarketByTitle(title: string): Promise<MarketRow | null> {
+    const result = await this.pool.query<MarketRow>(
+      `SELECT * FROM markets
+       WHERE lower(trim(title)) = lower(trim($1))
+         AND status NOT IN ('VOIDED', 'RESOLVED')
+       LIMIT 1`,
+      [title],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async upsertMarket(market: {
     marketId: string;
     onChainMarketId?: string;

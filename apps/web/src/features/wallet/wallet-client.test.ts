@@ -33,6 +33,8 @@ vi.mock("@/features/wallet/wallet-provider", () => ({
     provider === "braavos" ? "Braavos" : "Argent X",
   ),
   getWalletObject: (...args: unknown[]) => getWalletObjectMock(...args),
+  waitForWalletObject: (...args: unknown[]) =>
+    Promise.resolve(getWalletObjectMock(...args)),
   isExtensionProvider: vi.fn(
     (provider: string) => provider === "braavos" || provider === "argentX",
   ),

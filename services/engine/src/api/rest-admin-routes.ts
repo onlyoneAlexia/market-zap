@@ -259,6 +259,17 @@ export function registerAdminRoutes(
       }
 
       const data = parsed.data;
+
+      // Prevent duplicate markets with the same question
+      const existing = await context.deps.db.findMarketByTitle(data.title);
+      if (existing && existing.market_id !== data.marketId) {
+        res.status(409).json({
+          error: "A market with this question already exists",
+          existingMarketId: existing.market_id,
+        });
+        return;
+      }
+
       const market = await context.deps.db.upsertMarket({
         marketId: data.marketId,
         onChainMarketId: data.onChainMarketId,

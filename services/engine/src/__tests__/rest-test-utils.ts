@@ -73,6 +73,7 @@ export function createMockDeps(): RestDeps {
       markTradeFailed: vi.fn(),
       updateMarketVolume: vi.fn(),
       updateOrderStatus: vi.fn(),
+      findMarketByTitle: vi.fn().mockResolvedValue(null),
       upsertMarket: vi.fn().mockResolvedValue({ id: "m1", market_id: "m1" }),
       getTraderCount: vi.fn().mockResolvedValue(0),
       getTraderCountsByMarket: vi.fn().mockResolvedValue({}),
