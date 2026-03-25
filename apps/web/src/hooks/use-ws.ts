@@ -3,10 +3,11 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-client";
+import { patchPaginatedTrades, patchTradeHistory } from "@/lib/trade-settlement";
 import { useAppStore } from "./use-store";
 import { useToast } from "./use-toast";
 import { getEngineWsUrl } from "@/lib/api";
-import type { PaginatedResponse, Trade } from "@market-zap/shared";
+import type { PaginatedResponse, Trade, TradeHistory } from "@market-zap/shared";
 
 /**
  * Global WebSocket connection manager with exponential backoff reconnection.
@@ -229,18 +230,26 @@ export function useGlobalWebSocket() {
             (data as { type: unknown }).type === "trade_settled"
           ) {
             const { tradeId, txHash, buyer, seller } = data as TradeSettledData;
+            const settlementPatch = {
+              settled: true,
+              settlementStatus: "settled" as const,
+              settlementError: null,
+              txHash,
+            };
             queryClient.setQueryData(
               queryKeys.markets.trades(marketId),
-              (old: PaginatedResponse<Trade> | undefined) => {
-                if (!old) return old;
-                const items = old.items.map((t) =>
-                  t.id === tradeId ? { ...t, txHash, settled: true } : t,
-                );
-                return { ...old, items };
-              },
+              (old: PaginatedResponse<Trade> | undefined) =>
+                patchPaginatedTrades(old, tradeId, settlementPatch),
             );
 
-            if (isWalletParticipant(buyer, seller)) {
+            const currentWallet = walletRef.current;
+            if (currentWallet && isWalletParticipant(buyer, seller)) {
+              queryClient.setQueryData(
+                queryKeys.portfolio.history(currentWallet),
+                (old: TradeHistory | undefined) =>
+                  patchTradeHistory(old, tradeId, settlementPatch),
+              );
+
               // Only refresh wallet-specific data for the participant.
               queryClient.invalidateQueries({ queryKey: ["balance"] });
               queryClient.invalidateQueries({ queryKey: ["wallet-balance"] });
@@ -261,24 +270,29 @@ export function useGlobalWebSocket() {
             (data as { type: unknown }).type === "trade_failed"
           ) {
             const { tradeId, error, buyer, seller } = data as TradeFailedData;
+            const failedPatch = {
+              settled: false,
+              settlementStatus: "failed" as const,
+              settlementError: error,
+            };
             // Update the trade in cache to show "failed" instead of "settling..."
             queryClient.setQueryData(
               queryKeys.markets.trades(marketId),
-              (old: PaginatedResponse<Trade> | undefined) => {
-                if (!old) return old;
-                const items = old.items.map((t) =>
-                  t.id === tradeId
-                    ? { ...t, settlementStatus: "failed", settlementError: error }
-                    : t,
-                );
-                return { ...old, items };
-              },
+              (old: PaginatedResponse<Trade> | undefined) =>
+                patchPaginatedTrades(old, tradeId, failedPatch),
             );
             // Settlement failed — refresh market-level data for all viewers.
             queryClient.invalidateQueries({ queryKey: queryKeys.markets.detail(marketId) });
             queryClient.invalidateQueries({ queryKey: ["liquidity"] });
 
-            if (isWalletParticipant(buyer, seller)) {
+            const currentWallet = walletRef.current;
+            if (currentWallet && isWalletParticipant(buyer, seller)) {
+              queryClient.setQueryData(
+                queryKeys.portfolio.history(currentWallet),
+                (old: TradeHistory | undefined) =>
+                  patchTradeHistory(old, tradeId, failedPatch),
+              );
+
               // Only participants need balance/portfolio/orders refresh + destructive toast.
               queryClient.invalidateQueries({ queryKey: ["balance"] });
               queryClient.invalidateQueries({ queryKey: ["wallet-balance"] });

@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { ArrowSquareOut, CheckCircle, Clock, XCircle, ShieldCheck } from "@phosphor-icons/react";
 import {
   Dialog,

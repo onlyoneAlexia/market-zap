@@ -35,14 +35,21 @@ function formatTime(ts: number) {
 }
 
 export const RecentTrades = React.memo(function RecentTrades({ trades }: RecentTradesProps) {
-  const [selectedTrade, setSelectedTrade] = useState<TradeProof | null>(null);
+  const [selectedTradeKey, setSelectedTradeKey] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Show all trades — failed ones get a distinct status indicator
   const visibleTrades = trades;
+  const selectedTrade = selectedTradeKey
+    ? visibleTrades.find((trade) => getTradeKey(trade) === selectedTradeKey) ?? null
+    : null;
 
-  function handleTradeClick(trade: Trade) {
-    setSelectedTrade({
+  function getTradeKey(trade: Trade): string {
+    return trade.id ?? `${trade.timestamp}`;
+  }
+
+  function toTradeProof(trade: Trade): TradeProof {
+    return {
       id: trade.id ?? `${trade.timestamp}`,
       price: trade.price,
       amount: trade.amount,
@@ -54,7 +61,11 @@ export const RecentTrades = React.memo(function RecentTrades({ trades }: RecentT
       settled: trade.settled ?? true,
       settlementStatus: trade.settlementStatus,
       settlementError: trade.settlementError,
-    });
+    };
+  }
+
+  function handleTradeClick(trade: Trade) {
+    setSelectedTradeKey(getTradeKey(trade));
     setDialogOpen(true);
   }
 
@@ -138,9 +149,12 @@ export const RecentTrades = React.memo(function RecentTrades({ trades }: RecentT
       </Card>
 
       <TradeProofDialog
-        trade={selectedTrade}
+        trade={selectedTrade ? toTradeProof(selectedTrade) : null}
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setSelectedTradeKey(null);
+        }}
       />
     </>
   );

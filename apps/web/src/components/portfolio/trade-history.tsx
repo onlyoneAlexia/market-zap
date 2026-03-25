@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { Spinner, ArrowSquareOut } from "@phosphor-icons/react";
+import type { Trade } from "@market-zap/shared";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useTradeHistory } from "@/hooks/use-portfolio";
@@ -19,8 +20,11 @@ function formatDate(ts: string) {
 export function TradeHistory() {
   const { data, isLoading } = useTradeHistory();
   const trades = data?.trades ?? [];
-  const [selectedTrade, setSelectedTrade] = useState<TradeProof | null>(null);
+  const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const selectedTrade = selectedTradeId
+    ? trades.find((trade) => trade.id === selectedTradeId) ?? null
+    : null;
 
   if (isLoading) {
     return (
@@ -40,27 +44,28 @@ export function TradeHistory() {
     );
   }
 
-  function handleRowClick(trade: (typeof trades)[number]) {
+  function toTradeProof(trade: Trade): TradeProof {
     const side = parseFloat(trade.price) >= 0.5 ? "buy" : "sell";
-    const full = trade as typeof trade & {
-      settlementStatus?: "pending" | "settled" | "failed";
-      settlementError?: string | null;
-    };
-    setSelectedTrade({
+
+    return {
       id: trade.id,
       price: trade.price,
       amount: trade.amount,
       fee: trade.fee,
-      side: side as "buy" | "sell",
+      side,
       outcome: trade.outcomeIndex === 0 ? "Yes" : "No",
       timestamp: trade.timestamp,
       txHash: trade.txHash,
       settled: trade.settled,
-      settlementStatus: full.settlementStatus,
-      settlementError: full.settlementError,
+      settlementStatus: trade.settlementStatus,
+      settlementError: trade.settlementError,
       maker: trade.maker,
       taker: trade.taker,
-    });
+    };
+  }
+
+  function handleRowClick(trade: (typeof trades)[number]) {
+    setSelectedTradeId(trade.id);
     setDialogOpen(true);
   }
 
@@ -71,9 +76,6 @@ export function TradeHistory() {
           <div className="divide-y md:hidden">
             {trades.map((trade) => {
               const side = parseFloat(trade.price) >= 0.5 ? "buy" : "sell";
-              const full = trade as typeof trade & {
-                settlementStatus?: "pending" | "settled" | "failed";
-              };
 
               return (
                 <button
@@ -87,7 +89,7 @@ export function TradeHistory() {
                         {trade.marketId}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {formatDate(trade.timestamp as string)}
+                        {formatDate(trade.timestamp)}
                       </p>
                     </div>
                     <Badge variant={side === "buy" ? "yes" : "no"}>
@@ -117,12 +119,12 @@ export function TradeHistory() {
                   </div>
 
                   <div className="text-xs">
-                    {full.settlementStatus === "settled" ? (
+                    {trade.settlementStatus === "settled" ? (
                       <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                         <ArrowSquareOut className="h-3 w-3" />
                         Settled on-chain
                       </span>
-                    ) : full.settlementStatus === "failed" ? (
+                    ) : trade.settlementStatus === "failed" ? (
                       <span className="text-destructive">Settlement failed</span>
                     ) : (
                       <span className="text-yellow-600 dark:text-yellow-400">
@@ -151,9 +153,6 @@ export function TradeHistory() {
               <tbody>
                 {trades.map((trade) => {
                   const side = parseFloat(trade.price) >= 0.5 ? "buy" : "sell";
-                  const full = trade as typeof trade & {
-                    settlementStatus?: "pending" | "settled" | "failed";
-                  };
                   return (
                     <tr
                       key={trade.id}
@@ -178,19 +177,19 @@ export function TradeHistory() {
                         ${trade.fee ?? "0"}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {full.settlementStatus === "settled" ? (
+                        {trade.settlementStatus === "settled" ? (
                           <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
                             <ArrowSquareOut className="h-3 w-3" />
                             on-chain
                           </span>
-                        ) : full.settlementStatus === "failed" ? (
+                        ) : trade.settlementStatus === "failed" ? (
                           <span className="text-xs text-destructive">failed</span>
                         ) : (
                           <span className="text-xs text-yellow-600 dark:text-yellow-400">pending</span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-right text-xs text-muted-foreground">
-                        {formatDate(trade.timestamp as string)}
+                        {formatDate(trade.timestamp)}
                       </td>
                     </tr>
                   );
@@ -202,9 +201,12 @@ export function TradeHistory() {
       </Card>
 
       <TradeProofDialog
-        trade={selectedTrade}
+        trade={selectedTrade ? toTradeProof(selectedTrade) : null}
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setSelectedTradeId(null);
+        }}
       />
     </>
   );
