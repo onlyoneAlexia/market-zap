@@ -246,7 +246,7 @@ export function registerAdminRoutes(
         ammB: z.number().min(10).max(10000).optional(),
         marketType: z.enum(["public", "private"]).optional().default("public"),
         thumbnailUrl: z.string().url().optional(),
-        initialStatus: z.enum(["PENDING_APPROVAL", "ACTIVE"]).optional().default("ACTIVE"),
+        initialStatus: z.enum(["PENDING_APPROVAL", "ACTIVE"]).optional(),
       }).refine(
         (d) => d.outcomeLabels.length === d.outcomeCount,
         { message: "outcomeLabels length must match outcomeCount" },
@@ -259,6 +259,9 @@ export function registerAdminRoutes(
       }
 
       const data = parsed.data;
+      const initialStatus =
+        data.initialStatus ??
+        (data.marketType === "private" ? "ACTIVE" : "PENDING_APPROVAL");
 
       // Prevent duplicate markets with the same question
       const existing = await context.deps.db.findMarketByTitle(data.title);
@@ -284,7 +287,7 @@ export function registerAdminRoutes(
         resolutionTime: data.resolutionTime ? new Date(data.resolutionTime) : undefined,
         marketType: data.marketType,
         thumbnailUrl: data.thumbnailUrl,
-        initialStatus: data.initialStatus,
+        initialStatus,
       });
 
       const marketId = market.market_id;
@@ -408,7 +411,12 @@ export function registerAdminRoutes(
   router.get(
     "/api/admin/pending-markets",
     asyncHandler(async (_req: Request, res: Response) => {
-      const markets = await context.deps.db.getMarkets(100, 0, undefined, "PENDING_APPROVAL");
+      const { rows: markets } = await context.deps.db.getMarketsPage(
+        100,
+        0,
+        undefined,
+        "PENDING_APPROVAL",
+      );
       ok(res, markets.map(formatMarket));
     }),
   );

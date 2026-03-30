@@ -93,6 +93,30 @@ function feltToString(felt: string): string {
   return Buffer.from(bytes).toString("utf-8");
 }
 
+export function deriveIndexedMarketVisibility(
+  factoryResult: string[] | null | undefined,
+): {
+  marketType: "public" | "private";
+  initialStatus: "PENDING_APPROVAL" | "ACTIVE";
+} {
+  try {
+    const rawMarketType =
+      factoryResult && factoryResult.length >= 14
+        ? Number(BigInt(factoryResult[13]))
+        : 0;
+    const marketType = rawMarketType === 1 ? "private" : "public";
+    return {
+      marketType,
+      initialStatus: marketType === "private" ? "ACTIVE" : "PENDING_APPROVAL",
+    };
+  } catch {
+    return {
+      marketType: "public",
+      initialStatus: "PENDING_APPROVAL",
+    };
+  }
+}
+
 interface RawChainEvent {
   fromAddress: string;
   keys: string[];
@@ -767,6 +791,8 @@ export class ApibaraIndexer {
     // Read collateral_token + outcome_count from factory contract
     let collateralToken = event.collateralToken;
     let outcomeCount = event.outcomeCount;
+    let marketType: "public" | "private" = "public";
+    let initialStatus: "PENDING_APPROVAL" | "ACTIVE" = "PENDING_APPROVAL";
     try {
       const factoryAddress = this.options.marketFactoryAddress;
       const result = await this.provider.callContract({
@@ -777,6 +803,9 @@ export class ApibaraIndexer {
       // Market struct fields: market_id, creator, condition_id, collateral_token,
       // question_hash, category, outcome_count, created_at, resolution_time,
       // bond_refunded, voided, volume (u256: low, high), market_type
+      const visibility = deriveIndexedMarketVisibility(result);
+      marketType = visibility.marketType;
+      initialStatus = visibility.initialStatus;
       if (result.length >= 7) {
         collateralToken = normalizeHex(result[3]);
         outcomeCount = Number(BigInt(result[6]));
@@ -804,6 +833,8 @@ export class ApibaraIndexer {
       outcomeLabels,
       collateralToken,
       resolutionSource: event.resolutionSource,
+      marketType,
+      initialStatus,
       resolutionTime: event.resolutionTime
         ? new Date(event.resolutionTime * 1000)
         : undefined,

@@ -113,7 +113,8 @@ async function main() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          marketId: m.id,
+          // Match the indexer identity to avoid split rows for one market.
+          marketId: onChainMarketId,
           onChainMarketId,
           title: m.question,
           outcomeLabels: m.outcomes,

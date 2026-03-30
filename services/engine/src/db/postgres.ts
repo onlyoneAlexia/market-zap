@@ -32,6 +32,14 @@ const { Pool } = pg;
 
 type MarketListSortColumn = "total_volume" | "created_at" | "resolution_time";
 type MarketListSortDirection = "ASC" | "DESC";
+type Queryable = Pick<InstanceType<typeof Pool>, "query">;
+
+const MARKET_EXPLORER_RESOLUTION_BUCKET_SECONDS = 60 * 60;
+
+export interface MarketListPage {
+  rows: MarketRow[];
+  total: number;
+}
 
 export interface UpsertMarketInput {
   marketId: string;
@@ -62,10 +70,15 @@ function normalizeMarketTitle(value: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function resolutionTimeKey(value: Date | null | undefined): string | null {
+function resolutionTimeBucketKey(value: Date | null | undefined): string | null {
   if (!value) return null;
   const timestamp = Math.floor(new Date(value).getTime() / 1000);
-  return Number.isFinite(timestamp) && timestamp > 0 ? String(timestamp) : null;
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+
+  const bucketed =
+    Math.floor(timestamp / MARKET_EXPLORER_RESOLUTION_BUCKET_SECONDS) *
+    MARKET_EXPLORER_RESOLUTION_BUCKET_SECONDS;
+  return String(bucketed);
 }
 
 function parseBigIntSafe(value: string | null | undefined): bigint {
@@ -122,6 +135,8 @@ export function selectOutcomeLabels(
 export function mergeMarketStatus(
   existingStatus: MarketRow["status"] | null | undefined,
   incomingStatus: MarketRow["status"],
+  existingMarketType?: MarketRow["market_type"] | null,
+  incomingMarketType?: MarketRow["market_type"] | null,
 ): MarketRow["status"] {
   if (!existingStatus) return incomingStatus;
 
@@ -139,6 +154,9 @@ export function mergeMarketStatus(
   }
 
   if (existingStatus === "PENDING_APPROVAL" && incomingStatus === "ACTIVE") {
+    if (existingMarketType === "private" || incomingMarketType === "private") {
+      return "ACTIVE";
+    }
     return "PENDING_APPROVAL";
   }
 
@@ -150,7 +168,9 @@ export function getMarketDedupKey(
 ): string {
   const title = normalizeMarketTitle(row.title);
   if (title) {
-    const resolutionKey = resolutionTimeKey(row.resolution_time);
+    // Explorer cards only surface coarse countdown data, so rows created a few
+    // minutes apart for the same question should still collapse to one card.
+    const resolutionKey = resolutionTimeBucketKey(row.resolution_time);
     if (resolutionKey) return `title:${title}|resolution:${resolutionKey}`;
     return `title:${title}`;
   }
@@ -308,6 +328,66 @@ export class Database {
 
   async createTables(): Promise<void> {
     await createSchemaTables(this.pool);
+  }
+
+  private async acquireMarketIdentityLocks(
+    queryable: Queryable,
+    market: UpsertMarketInput,
+  ): Promise<void> {
+    const keys = [
+      market.marketId ? `market:id:${normalizeMarketIdentity(market.marketId)}` : null,
+      market.onChainMarketId
+        ? `market:onchain:${normalizeMarketIdentity(market.onChainMarketId)}`
+        : null,
+      market.conditionId
+        ? `market:condition:${normalizeMarketIdentity(market.conditionId)}`
+        : null,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .sort();
+
+    for (const key of keys) {
+      await queryable.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+        [key],
+      );
+    }
+  }
+
+  private async getMarketByOnChainMarketIdWith(
+    queryable: Queryable,
+    onChainMarketId: string,
+  ): Promise<MarketRow | null> {
+    const result = await queryable.query<MarketRow>(
+      `SELECT * FROM markets
+       WHERE on_chain_market_id = $1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
+      [onChainMarketId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async getMarketByConditionIdWith(
+    queryable: Queryable,
+    conditionId: string,
+  ): Promise<MarketRow | null> {
+    const normalized = normalizeHexFragment(conditionId);
+    const result = await queryable.query<MarketRow>(
+      `SELECT *
+       FROM markets
+       WHERE condition_id IS NOT NULL
+         AND lower(
+           coalesce(
+             nullif(ltrim(replace(condition_id, '0x', ''), '0'), ''),
+             '0'
+           )
+         ) = $1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
+      [normalized],
+    );
+    return result.rows[0] ?? null;
   }
 
   // -----------------------------------------------------------------------
@@ -627,6 +707,22 @@ export class Database {
       search?: string;
     },
   ): Promise<MarketRow[]> {
+    const page = await this.getMarketsPage(limit, offset, category, status, options);
+    return page.rows;
+  }
+
+  async getMarketsPage(
+    limit = 50,
+    offset = 0,
+    category?: string,
+    status?: string,
+    options?: {
+      marketType?: "public" | "private";
+      sortBy?: "volume" | "createdAt" | "resolutionTime";
+      sortOrder?: "asc" | "desc";
+      search?: string;
+    },
+  ): Promise<MarketListPage> {
     let query = `SELECT * FROM markets WHERE condition_id IS NOT NULL AND condition_id != '' AND on_chain_market_id IS NOT NULL`;
     const params: unknown[] = [];
     let idx = 1;
@@ -664,7 +760,10 @@ export class Database {
     const dedupedRows = dedupeMarketRows(result.rows).sort((left, right) =>
       compareMarketRows(left, right, sortCol, sortDir),
     );
-    return dedupedRows.slice(offset, offset + limit);
+    return {
+      rows: dedupedRows.slice(offset, offset + limit),
+      total: dedupedRows.length,
+    };
   }
 
   async getMarketById(marketId: string): Promise<MarketRow | null> {
@@ -687,40 +786,20 @@ export class Database {
   }
 
   async getMarketByOnChainMarketId(onChainMarketId: string): Promise<MarketRow | null> {
-    const result = await this.pool.query<MarketRow>(
-      `SELECT * FROM markets
-       WHERE on_chain_market_id = $1
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 1`,
-      [onChainMarketId],
-    );
-    return result.rows[0] ?? null;
+    return this.getMarketByOnChainMarketIdWith(this.pool, onChainMarketId);
   }
 
   async getMarketByConditionId(conditionId: string): Promise<MarketRow | null> {
-    const normalized = normalizeHexFragment(conditionId);
-    const result = await this.pool.query<MarketRow>(
-      `SELECT *
-       FROM markets
-       WHERE condition_id IS NOT NULL
-         AND lower(
-           coalesce(
-             nullif(ltrim(replace(condition_id, '0x', ''), '0'), ''),
-             '0'
-           )
-         ) = $1
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 1`,
-      [normalized],
-    );
-    return result.rows[0] ?? null;
+    return this.getMarketByConditionIdWith(this.pool, conditionId);
   }
 
   async findMarketByTitle(title: string): Promise<MarketRow | null> {
     const result = await this.pool.query<MarketRow>(
       `SELECT * FROM markets
-       WHERE lower(trim(title)) = lower(trim($1))
+       WHERE lower(regexp_replace(trim(title), '\s+', ' ', 'g')) =
+             lower(regexp_replace(trim($1), '\s+', ' ', 'g'))
          AND status NOT IN ('VOIDED', 'RESOLVED')
+       ORDER BY updated_at DESC, created_at DESC
        LIMIT 1`,
       [title],
     );
@@ -728,58 +807,76 @@ export class Database {
   }
 
   async upsertMarket(market: UpsertMarketInput): Promise<MarketRow> {
-    const existingByOnChain = market.onChainMarketId
-      ? await this.getMarketByOnChainMarketId(market.onChainMarketId)
-      : null;
-    const existing =
-      existingByOnChain ??
-      (market.conditionId
-        ? await this.getMarketByConditionId(market.conditionId)
-        : null);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.acquireMarketIdentityLocks(client, market);
 
-    const status = mergeMarketStatus(existing?.status, market.initialStatus ?? "ACTIVE");
-    const outcomeLabels = selectOutcomeLabels(existing?.outcome_labels, market.outcomeLabels);
-    const marketId = existing?.market_id ?? market.marketId;
+      const existingByOnChain = market.onChainMarketId
+        ? await this.getMarketByOnChainMarketIdWith(client, market.onChainMarketId)
+        : null;
+      const existing =
+        existingByOnChain ??
+        (market.conditionId
+          ? await this.getMarketByConditionIdWith(client, market.conditionId)
+          : null);
 
-    const result = await this.pool.query<MarketRow>(
-      `INSERT INTO markets
-         (market_id, on_chain_market_id, condition_id, title, description, category, outcome_count,
-          outcome_labels, collateral_token, resolution_source, resolution_time, market_type, thumbnail_url, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       ON CONFLICT (market_id) DO UPDATE SET
-         on_chain_market_id = COALESCE(EXCLUDED.on_chain_market_id, markets.on_chain_market_id),
-         condition_id = COALESCE(EXCLUDED.condition_id, markets.condition_id),
-         title = EXCLUDED.title,
-         description = EXCLUDED.description,
-         category = EXCLUDED.category,
-         outcome_count = EXCLUDED.outcome_count,
-         outcome_labels = EXCLUDED.outcome_labels,
-         collateral_token = EXCLUDED.collateral_token,
-         resolution_source = EXCLUDED.resolution_source,
-         resolution_time = COALESCE(EXCLUDED.resolution_time, markets.resolution_time),
-         market_type = COALESCE(EXCLUDED.market_type, markets.market_type),
-         thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, markets.thumbnail_url),
-         status = EXCLUDED.status,
-         updated_at = NOW()
-       RETURNING *`,
-      [
-        marketId,
-        market.onChainMarketId ?? existing?.on_chain_market_id ?? null,
-        market.conditionId ?? existing?.condition_id ?? null,
-        pickNonEmptyString(market.title, existing?.title, marketId),
-        pickNonEmptyString(market.description, existing?.description),
-        pickNonEmptyString(market.category, existing?.category, "general"),
-        outcomeLabels.length > 0 ? outcomeLabels.length : market.outcomeCount,
-        outcomeLabels,
-        pickNonEmptyString(market.collateralToken, existing?.collateral_token),
-        pickNonEmptyString(market.resolutionSource, existing?.resolution_source),
-        market.resolutionTime ?? existing?.resolution_time ?? null,
-        market.marketType ?? existing?.market_type ?? "public",
-        market.thumbnailUrl ?? existing?.thumbnail_url ?? null,
-        status,
-      ],
-    );
-    return result.rows[0];
+      const status = mergeMarketStatus(
+        existing?.status,
+        market.initialStatus ?? "ACTIVE",
+        existing?.market_type,
+        market.marketType,
+      );
+      const outcomeLabels = selectOutcomeLabels(existing?.outcome_labels, market.outcomeLabels);
+      const marketId = existing?.market_id ?? market.marketId;
+
+      const result = await client.query<MarketRow>(
+        `INSERT INTO markets
+           (market_id, on_chain_market_id, condition_id, title, description, category, outcome_count,
+            outcome_labels, collateral_token, resolution_source, resolution_time, market_type, thumbnail_url, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (market_id) DO UPDATE SET
+           on_chain_market_id = COALESCE(EXCLUDED.on_chain_market_id, markets.on_chain_market_id),
+           condition_id = COALESCE(EXCLUDED.condition_id, markets.condition_id),
+           title = EXCLUDED.title,
+           description = EXCLUDED.description,
+           category = EXCLUDED.category,
+           outcome_count = EXCLUDED.outcome_count,
+           outcome_labels = EXCLUDED.outcome_labels,
+           collateral_token = EXCLUDED.collateral_token,
+           resolution_source = EXCLUDED.resolution_source,
+           resolution_time = COALESCE(EXCLUDED.resolution_time, markets.resolution_time),
+           market_type = COALESCE(EXCLUDED.market_type, markets.market_type),
+           thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, markets.thumbnail_url),
+           status = EXCLUDED.status,
+           updated_at = NOW()
+         RETURNING *`,
+        [
+          marketId,
+          market.onChainMarketId ?? existing?.on_chain_market_id ?? null,
+          market.conditionId ?? existing?.condition_id ?? null,
+          pickNonEmptyString(market.title, existing?.title, marketId),
+          pickNonEmptyString(market.description, existing?.description),
+          pickNonEmptyString(market.category, existing?.category, "general"),
+          outcomeLabels.length > 0 ? outcomeLabels.length : market.outcomeCount,
+          outcomeLabels,
+          pickNonEmptyString(market.collateralToken, existing?.collateral_token),
+          pickNonEmptyString(market.resolutionSource, existing?.resolution_source),
+          market.resolutionTime ?? existing?.resolution_time ?? null,
+          market.marketType ?? existing?.market_type ?? "public",
+          market.thumbnailUrl ?? existing?.thumbnail_url ?? null,
+          status,
+        ],
+      );
+
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async updateMarketVolume(

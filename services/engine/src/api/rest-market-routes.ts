@@ -35,7 +35,7 @@ export function registerMarketRoutes(
       }
 
       const { limit, offset, category, status, marketType, sortBy, sortOrder, search } = parsed.data;
-      const rows = await context.deps.db.getMarkets(limit, offset, category, status, {
+      const { rows, total } = await context.deps.db.getMarketsPage(limit, offset, category, status, {
         marketType,
         sortBy,
         sortOrder,
@@ -64,8 +64,7 @@ export function registerMarketRoutes(
 
         return { ...market, traders };
       });
-
-      ok(res, paginated(markets, markets.length, Math.floor(offset / limit), limit));
+      ok(res, paginated(markets, total, Math.floor(offset / limit), limit));
     }),
   );
 

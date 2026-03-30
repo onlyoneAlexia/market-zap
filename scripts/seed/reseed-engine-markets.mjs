@@ -260,7 +260,8 @@ async function wipeEngineData() {
 
 async function seedMarketToEngine(engineMarket, onChainData) {
   const body = {
-    marketId: engineMarket.engineId,
+    // Match the indexer identity to avoid split rows for one market.
+    marketId: onChainData.onChainMarketId,
     onChainMarketId: onChainData.onChainMarketId,
     conditionId: onChainData.conditionId,
     title: engineMarket.question,
