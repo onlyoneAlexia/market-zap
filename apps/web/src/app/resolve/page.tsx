@@ -13,8 +13,6 @@ import { useMarkets } from "@/hooks/use-market";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
-const DISPUTE_PERIOD_SECONDS = 3600; // 1 hour
-
 function formatCountdown(seconds: number): string {
   if (seconds <= 0) return "now";
   const d = Math.floor(seconds / 86400);
@@ -44,6 +42,13 @@ export default function ResolvePage() {
   const { data, isLoading } = useMarkets();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { data: engineConfig } = useQuery({
+    queryKey: ["engine-config"],
+    queryFn: () => api.getConfig(),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    enabled: isConnected,
+  });
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{
     marketId: string;
@@ -89,6 +94,8 @@ export default function ResolvePage() {
 
   const now = useCountdown();
   const allMarkets = data?.items ?? [];
+  const disputePeriodSeconds =
+    engineConfig?.resolutionDisputePeriodSeconds ?? 300;
 
   // Active markets approaching resolution (not yet resolvable)
   const upcomingMarkets = allMarkets.filter(
@@ -342,7 +349,7 @@ export default function ResolvePage() {
               const proposedAt = (market as any).updatedAt
                 ? Math.floor(new Date((market as any).updatedAt).getTime() / 1000)
                 : 0;
-              const finalizeAt = proposedAt + DISPUTE_PERIOD_SECONDS;
+              const finalizeAt = proposedAt + disputePeriodSeconds;
               const secsUntilFinalize = finalizeAt - now;
               const canFinalize = secsUntilFinalize <= 0;
 

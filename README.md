@@ -207,6 +207,7 @@ REDIS_URL=redis://localhost:6379
 STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io
 ADMIN_ADDRESS=0x033484...3837
 ENGINE_API_KEY=your-api-key
+RESOLUTION_DISPUTE_PERIOD_SECONDS=300
 SKIP_BALANCE_CHECK=true  # false in production
 ```
 

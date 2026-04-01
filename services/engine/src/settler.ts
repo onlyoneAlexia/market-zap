@@ -57,6 +57,25 @@ async function withRetry<T>(
   throw new Error("unreachable");
 }
 
+const DEFAULT_RESOLUTION_DISPUTE_PERIOD_SECONDS = 300;
+const MIN_RESOLUTION_DISPUTE_PERIOD_SECONDS = 60;
+const MAX_RESOLUTION_DISPUTE_PERIOD_SECONDS = 30 * 24 * 60 * 60;
+
+function normalizeResolutionDisputePeriodSeconds(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_RESOLUTION_DISPUTE_PERIOD_SECONDS;
+  }
+
+  const rounded = Math.floor(value as number);
+  if (rounded < MIN_RESOLUTION_DISPUTE_PERIOD_SECONDS) {
+    return MIN_RESOLUTION_DISPUTE_PERIOD_SECONDS;
+  }
+  if (rounded > MAX_RESOLUTION_DISPUTE_PERIOD_SECONDS) {
+    return MAX_RESOLUTION_DISPUTE_PERIOD_SECONDS;
+  }
+  return rounded;
+}
+
 export interface SettlementResult {
   tradeId: string;
   txHash: string;
@@ -72,6 +91,8 @@ export interface SettlerOptions {
   adminAddress: string;
   exchangeAddress: string;
   conditionalTokensAddress?: string;
+  resolverAddress?: string;
+  resolutionDisputePeriodSeconds?: number;
 }
 
 export class Settler {
@@ -82,6 +103,8 @@ export class Settler {
   private readonly adminPrivateKey: string;
   private readonly adminAddress: string;
   private readonly conditionalTokensAddress: string;
+  private readonly resolverAddress: string;
+  private readonly configuredResolutionDisputePeriodSeconds: number;
 
   constructor(options: SettlerOptions) {
     const rpcUrl =
@@ -101,6 +124,14 @@ export class Settler {
     this.adminPrivateKey = options.adminPrivateKey;
     this.adminAddress = options.adminAddress;
     this.conditionalTokensAddress = options.conditionalTokensAddress ?? "";
+    this.resolverAddress =
+      options.resolverAddress ??
+      process.env.RESOLVER_ADDRESS ??
+      getContractAddress("Resolver", "sepolia");
+    this.configuredResolutionDisputePeriodSeconds =
+      normalizeResolutionDisputePeriodSeconds(
+        options.resolutionDisputePeriodSeconds,
+      );
     this.exchange = new Contract({
       abi: CLOBRouterABI as unknown as Contract["abi"],
       address: options.exchangeAddress,
@@ -116,6 +147,11 @@ export class Settler {
   /** The exchange contract address (for order hash computation). */
   get exchangeAddr(): string {
     return this.exchangeAddress;
+  }
+
+  /** Configured dispute period used for admin outcome proposals. */
+  get resolutionDisputePeriodSeconds(): number {
+    return this.configuredResolutionDisputePeriodSeconds;
   }
 
   /** The RPC provider for on-chain calls (e.g. signature verification). */
@@ -761,7 +797,7 @@ export class Settler {
 
   /**
    * Resolve a market on-chain in two phases:
-   *   1. Set dispute period to 1s + propose the winning outcome
+   *   1. Set dispute bounds/period + propose the winning outcome
    *   2. Wait for dispute period, then finalize resolution
    *
    * The AdminResolver calls ConditionalTokens.report_payouts() which marks
@@ -770,28 +806,37 @@ export class Settler {
   /**
    * Phase 1: Propose an outcome on-chain. Returns immediately after the
    * proposal tx is confirmed (~seconds). The caller must wait for the
-   * dispute period (≥3600 s) and then call `finalizeResolution()`.
+   * configured dispute period and then call `finalizeResolution()`.
    */
   async proposeResolution(
     onChainMarketId: string,
     conditionId: string,
     winningOutcome: number,
-  ): Promise<{ success: boolean; txHash: string; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    txHash: string;
+    disputePeriodSeconds: number;
+    error?: string;
+  }> {
     try {
+      const disputePeriodSeconds = this.configuredResolutionDisputePeriodSeconds;
       console.log(
-        `[settler] proposing resolution: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}, winningOutcome=${winningOutcome}`,
+        `[settler] proposing resolution: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}, winningOutcome=${winningOutcome}, disputePeriodSeconds=${disputePeriodSeconds}`,
       );
 
-      const resolverAddress = getContractAddress("Resolver", "sepolia");
       const { ResolverABI } = await import("@market-zap/shared");
       const resolver = new Contract({
         abi: ResolverABI as unknown as Contract["abi"],
-        address: resolverAddress,
+        address: this.resolverAddress,
         providerOrAccount: this.account,
       });
 
       const proposeCalls: Call[] = [
-        resolver.populate("set_dispute_period", [3600]),
+        resolver.populate("set_dispute_bounds", [
+          MIN_RESOLUTION_DISPUTE_PERIOD_SECONDS,
+          MAX_RESOLUTION_DISPUTE_PERIOD_SECONDS,
+        ]),
+        resolver.populate("set_dispute_period", [disputePeriodSeconds]),
         resolver.populate("propose_outcome", [onChainMarketId, conditionId, winningOutcome]),
       ];
 
@@ -812,21 +857,35 @@ export class Settler {
       if (getExecutionStatus(proposeReceipt) === "REVERTED") {
         const reason = getRevertReason(proposeReceipt) ?? "unknown";
         console.error(`[settler] proposal REVERTED: ${reason}`);
-        return { success: false, txHash: proposeResponse.transaction_hash, error: `Proposal reverted: ${reason}` };
+        return {
+          success: false,
+          txHash: proposeResponse.transaction_hash,
+          disputePeriodSeconds,
+          error: `Proposal reverted: ${reason}`,
+        };
       }
 
       console.log(`[settler] proposal confirmed: ${conditionId}`);
-      return { success: true, txHash: proposeResponse.transaction_hash };
+      return {
+        success: true,
+        txHash: proposeResponse.transaction_hash,
+        disputePeriodSeconds,
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[settler] proposal failed:`, message);
-      return { success: false, txHash: "", error: message };
+      return {
+        success: false,
+        txHash: "",
+        disputePeriodSeconds: this.configuredResolutionDisputePeriodSeconds,
+        error: message,
+      };
     }
   }
 
   /**
    * Phase 2: Finalize a previously proposed resolution. Must be called
-   * after the dispute period (≥3600 s) has elapsed.
+   * after the configured dispute period has elapsed.
    */
   async finalizeResolution(
     onChainMarketId: string,
@@ -837,11 +896,10 @@ export class Settler {
         `[settler] finalizing resolution: onChainMarketId=${onChainMarketId}, conditionId=${conditionId}`,
       );
 
-      const resolverAddress = getContractAddress("Resolver", "sepolia");
       const { ResolverABI } = await import("@market-zap/shared");
       const resolver = new Contract({
         abi: ResolverABI as unknown as Contract["abi"],
-        address: resolverAddress,
+        address: this.resolverAddress,
         providerOrAccount: this.account,
       });
 
@@ -884,11 +942,10 @@ export class Settler {
     conditionId: string,
   ): Promise<{ proposedOutcome: number; proposedAt: number; disputePeriod: number; status: number } | null> {
     try {
-      const resolverAddress = getContractAddress("Resolver", "sepolia");
       const { ResolverABI } = await import("@market-zap/shared");
       const resolver = new Contract({
         abi: ResolverABI as unknown as Contract["abi"],
-        address: resolverAddress,
+        address: this.resolverAddress,
         providerOrAccount: this.provider,
       });
       const result = await resolver.call("get_proposal", [conditionId]) as {

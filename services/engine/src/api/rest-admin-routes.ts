@@ -93,7 +93,10 @@ export function registerAdminRoutes(
               onChain.status === 2 ? "RESOLVED" : "PROPOSED",
               onChain.proposedOutcome,
             );
-            const disputePeriod = onChain.disputePeriod || 3600;
+            const disputePeriod =
+              onChain.disputePeriod > 0
+                ? onChain.disputePeriod
+                : context.deps.settler.resolutionDisputePeriodSeconds;
             const finalizeAfterMs =
               (onChain.proposedAt + disputePeriod) * 1000;
             ok(res, {
@@ -126,8 +129,10 @@ export function registerAdminRoutes(
           winning_outcome: winningOutcome,
         }),
         proposalTxHash: result.txHash,
-        disputePeriodSeconds: 3600,
-        finalizeAfter: new Date(Date.now() + 3600 * 1000).toISOString(),
+        disputePeriodSeconds: result.disputePeriodSeconds,
+        finalizeAfter: new Date(
+          Date.now() + result.disputePeriodSeconds * 1000,
+        ).toISOString(),
       });
     }),
   );

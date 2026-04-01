@@ -572,8 +572,14 @@ export class MarketZapAPI {
   /**
    * Fetch public protocol config (operator address, etc.).
    */
-  async getConfig(): Promise<{ operatorAddress: string }> {
-    return this.get<{ operatorAddress: string }>("/config");
+  async getConfig(): Promise<{
+    operatorAddress: string;
+    resolutionDisputePeriodSeconds: number;
+  }> {
+    return this.get<{
+      operatorAddress: string;
+      resolutionDisputePeriodSeconds: number;
+    }>("/config");
   }
 
   // -----------------------------------------------------------------------

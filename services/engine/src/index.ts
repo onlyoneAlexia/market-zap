@@ -40,6 +40,9 @@ const MARKET_FACTORY_ADDRESS =
   getContractAddress("MarketFactory", NETWORK);
 const RESOLVER_ADDRESS =
   process.env.RESOLVER_ADDRESS ?? getContractAddress("Resolver", NETWORK);
+const RESOLUTION_DISPUTE_PERIOD_SECONDS = Number(
+  process.env.RESOLUTION_DISPUTE_PERIOD_SECONDS ?? 300,
+);
 
 async function main(): Promise<void> {
   logger.info("starting Market-Zap CLOB engine...");
@@ -83,6 +86,8 @@ async function main(): Promise<void> {
     adminAddress: ADMIN_ADDRESS,
     exchangeAddress: EXCHANGE_ADDRESS,
     conditionalTokensAddress: CONDITIONAL_TOKENS_ADDRESS,
+    resolverAddress: RESOLVER_ADDRESS,
+    resolutionDisputePeriodSeconds: RESOLUTION_DISPUTE_PERIOD_SECONDS,
   });
 
   const matcher = new Matcher(orderBook, {

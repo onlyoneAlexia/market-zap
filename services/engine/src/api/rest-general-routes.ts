@@ -115,6 +115,8 @@ export function registerGeneralRoutes(
   router.get("/api/config", (_req: Request, res: Response) => {
     ok(res, {
       operatorAddress: context.deps.settler.adminAddr,
+      resolutionDisputePeriodSeconds:
+        context.deps.settler.resolutionDisputePeriodSeconds,
     });
   });
 }

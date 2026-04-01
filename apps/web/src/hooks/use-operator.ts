@@ -14,16 +14,13 @@ function normalize(addr: string): string {
 function useOperatorAddress(): string | undefined {
   const { data } = useQuery({
     queryKey: ["engine-config"],
-    queryFn: async () => {
-      const cfg = await api.getConfig();
-      return cfg.operatorAddress;
-    },
+    queryFn: () => api.getConfig(),
     staleTime: Infinity,
     gcTime: Infinity,
     enabled: !ENV_OPERATOR,
   });
 
-  const raw = ENV_OPERATOR || data;
+  const raw = ENV_OPERATOR || data?.operatorAddress;
   return raw ? normalize(raw) : undefined;
 }
 
